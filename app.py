@@ -648,6 +648,7 @@ def create_task():
             return jsonify({'success': False, 'error': 'No passwords found in file'}), 400
         
         # Create task
+        # Create the task directly with all properties
         task = BFaTask(
             username=usernames[0] if len(usernames) == 1 else "",
             usernames=usernames,
@@ -657,12 +658,8 @@ def create_task():
             replica_id=config.REPLICA_ID
         )
         
-        task_manager.create_task(
-            username=task.username,
-            usernames=task.usernames,
-            password_file=task.password_file,
-            passwords=task.passwords
-        )
+        # Store the task in the manager
+        task_manager.tasks[task.task_id] = task
         
         # Start processing in background
         threading.Thread(
@@ -716,9 +713,15 @@ def delete_task(task_id: str):
 def process_task_background(task_id: str, filepath: str):
     """Process a task in the background"""
     try:
+        # Small delay to ensure task is fully stored
+        time.sleep(0.1)
+        
         task = task_manager.get_task(task_id)
         if not task:
-            logger.error(f"Task {task_id} not found")
+            logger.error(f"Task {task_id} not found in task manager")
+            # Try to recover by checking all tasks
+            all_tasks = task_manager.get_all_tasks()
+            logger.error(f"Available tasks: {[t.task_id for t in all_tasks]}")
             return
         
         # Update task status

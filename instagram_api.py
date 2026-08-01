@@ -70,7 +70,7 @@ class InstagramAPIHandler:
             
             try:
                 # Try to login
-                L.load_session_from_username(username, password)
+                L.login(username, password)
                 
                 # Verify the session is valid
                 try:
