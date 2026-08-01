@@ -8,7 +8,7 @@ import asyncio
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 import instaloader
-from instaloader import Instaloader, LoginException, ConnectionException, InstaloaderException
+from instaloader import Instaloader, BadCredentialsException, ConnectionException, InstaloaderException, LoginRequiredException, ProfileNotExistsException
 from instaloader.structures import Profile
 import requests
 import logging
@@ -103,9 +103,9 @@ class InstagramAPIHandler:
                         error_type="profile_fetch_error"
                     )
                     
-            except LoginException as e:
+            except (BadCredentialsException, LoginRequiredException) as e:
                 error_msg = str(e)
-                if "invalid user" in error_msg.lower():
+                if "invalid user" in error_msg.lower() or "not exists" in error_msg.lower():
                     return LoginResult(
                         success=False,
                         username=username,
@@ -113,7 +113,7 @@ class InstagramAPIHandler:
                         message="Invalid username",
                         error_type="invalid_username"
                     )
-                elif "password" in error_msg.lower():
+                elif "password" in error_msg.lower() or "credentials" in error_msg.lower():
                     return LoginResult(
                         success=False,
                         username=username,
@@ -129,6 +129,14 @@ class InstagramAPIHandler:
                         message=f"Login error: {error_msg}",
                         error_type="login_error"
                     )
+            except ProfileNotExistsException as e:
+                return LoginResult(
+                    success=False,
+                    username=username,
+                    password=password,
+                    message="Invalid username",
+                    error_type="invalid_username"
+                )
             except ConnectionException as e:
                 return LoginResult(
                     success=False,

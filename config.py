@@ -34,6 +34,5 @@ class Config:
     
     # Performance Configuration
     WORKER_COUNT = int(os.getenv('WORKER_COUNT', 4))
-    GEVENT_WORKERS = int(os.getenv('GEVENT_WORKERS', 10))
 
 config = Config()
