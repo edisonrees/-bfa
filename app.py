@@ -1,836 +1,430 @@
 """
-Instagram Mock BFa Web Application
-Main Flask application — instaloader routed through mockapis demo proxy
+MOCKA — Mock Instagram auth lab
+Flask app with instaloader traffic routed through mockapis.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import threading
 import time
-from datetime import datetime
-from typing import List, Dict, Any, Optional
-from flask import Flask, request, jsonify, render_template_string, send_from_directory, redirect, url_for
-import logging
-from werkzeug.utils import secure_filename
-from config import config
-from instagram_api import instagram_handler, LoginResult
-from file_processor import password_processor
-from models import BFaTask, BFaResult, task_manager
 import uuid
+from datetime import datetime
+from pathlib import Path
 
-# Configure logging
+from flask import Flask, jsonify, render_template, request, send_from_directory
+
+from config import config
+from file_processor import password_processor
+from instagram_api import instagram_handler
+from models import BFaTask, task_manager
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-app.config.from_object(config)
+BASE_DIR = Path(__file__).resolve().parent
+
+app = Flask(
+    __name__,
+    static_folder=str(BASE_DIR / "static"),
+    template_folder=str(BASE_DIR / "templates"),
+)
 app.secret_key = config.SECRET_KEY
+app.config["MAX_CONTENT_LENGTH"] = config.MAX_FILE_SIZE
 
-# HTML Templates
-MAIN_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instagram Mock BFa Tool</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-        
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.9;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 10px;
-            padding: 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .form-group input[type="text"],
-        .form-group input[type="file"],
-        .form-group textarea {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e1e1e1;
-            border-radius: 5px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-        
-        .form-group input[type="text"]:focus,
-        .form-group input[type="file"]:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .form-group textarea {
-            min-height: 100px;
-            resize: vertical;
-        }
-        
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 25px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        
-        .btn:active {
-            transform: translateY(0);
-        }
-        
-        .btn-secondary {
-            background: #6c757d;
-        }
-        
-        .btn-danger {
-            background: #dc3545;
-        }
-        
-        .btn-success {
-            background: #28a745;
-        }
-        
-        .file-info {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            margin-top: 10px;
-            display: none;
-        }
-        
-        .file-info.show {
-            display: block;
-        }
-        
-        .task-list {
-            margin-top: 20px;
-        }
-        
-        .task-card {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
-            border-left: 4px solid #667eea;
-        }
-        
-        .task-card.pending {
-            border-left-color: #ffc107;
-        }
-        
-        .task-card.processing {
-            border-left-color: #007bff;
-        }
-        
-        .task-card.completed {
-            border-left-color: #28a745;
-        }
-        
-        .task-card.failed {
-            border-left-color: #dc3545;
-        }
-        
-        .task-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .task-id {
-            font-size: 0.9em;
-            color: #666;
-        }
-        
-        .status-badge {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.85em;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-processing { background: #d1ecf1; color: #0c5460; }
-        .status-completed { background: #d4edda; color: #155724; }
-        .status-failed { background: #f8d7da; color: #721c24; }
-        
-        .progress-bar {
-            height: 20px;
-            background: #e9ecef;
-            border-radius: 10px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            transition: width 0.3s;
-        }
-        
-        .results {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #e9ecef;
-        }
-        
-        .result-item {
-            padding: 8px;
-            margin-bottom: 5px;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }
-        
-        .result-success {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .result-failure {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }
-        
-        .stat-card {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        
-        .stat-value {
-            font-size: 2em;
-            font-weight: bold;
-            color: #667eea;
-        }
-        
-        .stat-label {
-            color: #666;
-            font-size: 0.9em;
-            margin-top: 5px;
-        }
-        
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 1s ease-in-out infinite;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 15px 25px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            display: none;
-            z-index: 1000;
-            animation: slideIn 0.3s ease-out;
-        }
-        
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-        
-        .notification.show {
-            display: block;
-        }
-        
-        .notification.success {
-            border-left: 4px solid #28a745;
-        }
-        
-        .notification.error {
-            border-left: 4px solid #dc3545;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔍 Instagram Mock BFa Tool</h1>
-            <p>instaloader → {{ target_url }}</p>
-        </div>
-        
-        <div class="card">
-            <h2>📁 Upload Password File</h2>
-            <form id="uploadForm" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label for="passwordFile">Password File (txt, csv, json)</label>
-                    <input type="file" id="passwordFile" name="passwordFile" accept=".txt,.csv,.json" required>
-                </div>
-                <div class="form-group">
-                    <label for="usernames">Usernames (comma separated)</label>
-                    <textarea id="usernames" name="usernames" placeholder="username1, username2, username3" required></textarea>
-                </div>
-                <button type="submit" class="btn">
-                    <span id="submitText">Start Mock BFa Test</span>
-                    <span id="submitLoading" class="loading" style="display: none;"></span>
-                </button>
-            </form>
-            
-            <div id="fileInfo" class="file-info">
-                <strong>File:</strong> <span id="fileName"></span><br>
-                <strong>Passwords:</strong> <span id="passwordCount"></span>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>📊 Active Tasks</h2>
-            <div id="taskList" class="task-list"></div>
-        </div>
-        
-        <div class="card">
-            <h2>📈 Statistics</h2>
-            <div class="stats">
-                <div class="stat-card">
-                    <div class="stat-value" id="totalTasks">0</div>
-                    <div class="stat-label">Total Tasks</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="successfulLogins">0</div>
-                    <div class="stat-label">Successful Logins</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="totalAttempts">0</div>
-                    <div class="stat-label">Total Attempts</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="replicaId">Replica {{ replica_id }}</div>
-                    <div class="stat-label">Current Replica</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div id="notification" class="notification"></div>
-    
-    <script>
-        const replicaId = '{{ replica_id }}';
-        let tasks = [];
-        
-        // Show notification
-        function showNotification(message, type = 'success') {
-            const notification = document.getElementById('notification');
-            notification.textContent = message;
-            notification.className = 'notification ' + type;
-            notification.classList.add('show');
-            
-            setTimeout(() => {
-                notification.classList.remove('show');
-            }, 5000);
-        }
-        
-        // Update task list
-        function updateTaskList() {
-            fetch('/api/tasks')
-                .then(response => response.json())
-                .then(data => {
-                    tasks = data.tasks;
-                    const taskList = document.getElementById('taskList');
-                    
-                    if (tasks.length === 0) {
-                        taskList.innerHTML = '<p>No active tasks</p>';
-                        return;
-                    }
-                    
-                    taskList.innerHTML = tasks.map(task => `
-                        <div class="task-card ${task.status}">
-                            <div class="task-header">
-                                <div>
-                                    <strong>${task.username || task.usernames.join(', ')}</strong>
-                                    <span class="task-id">Task: ${task.task_id.substring(0, 8)}...</span>
-                                </div>
-                                <span class="status-badge status-${task.status}">${task.status}</span>
-                            </div>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${task.progress}/${task.total} * 100%">
-                                </div>
-                            </div>
-                            <div style="font-size: 0.9em; color: #666; margin-top: 5px;">
-                                Progress: ${task.progress}/${task.total} (${Math.round((task.progress/task.total)*100)}%)
-                            </div>
-                            ${task.successful_logins.length > 0 ? `
-                                <div class="results">
-                                    <strong>Successful Logins:</strong>
-                                    ${task.successful_logins.map(login => `
-                                        <div class="result-item result-success">
-                                            ${login.username}: ${login.password}
-                                        </div>
-                                    `).join('')}
-                                </div>
-                            ` : ''}
-                            ${task.error ? `
-                                <div class="result-item result-failure">
-                                    Error: ${task.error}
-                                </div>
-                            ` : ''}
-                        </div>
-                    `).join('');
-                    
-                    // Update stats
-                    document.getElementById('totalTasks').textContent = tasks.length;
-                    document.getElementById('successfulLogins').textContent = 
-                        tasks.reduce((sum, task) => sum + task.successful_logins.length, 0);
-                    document.getElementById('totalAttempts').textContent = 
-                        tasks.reduce((sum, task) => sum + task.progress, 0);
-                });
-        }
-        
-        // Upload form submission
-        document.getElementById('uploadForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const fileInput = document.getElementById('passwordFile');
-            const usernamesInput = document.getElementById('usernames');
-            const submitText = document.getElementById('submitText');
-            const submitLoading = document.getElementById('submitLoading');
-            
-            if (!fileInput.files.length) {
-                showNotification('Please select a password file', 'error');
-                return;
-            }
-            
-            if (!usernamesInput.value.trim()) {
-                showNotification('Please enter at least one username', 'error');
-                return;
-            }
-            
-            submitText.style.display = 'none';
-            submitLoading.style.display = 'inline-block';
-            
-            const formData = new FormData();
-            formData.append('passwordFile', fileInput.files[0]);
-            formData.append('usernames', usernamesInput.value);
-            
-            fetch('/api/tasks', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                submitText.style.display = 'inline';
-                submitLoading.style.display = 'none';
-                
-                if (data.success) {
-                    showNotification(`Task started: ${data.task_id.substring(0, 8)}...`);
-                    usernamesInput.value = '';
-                    fileInput.value = '';
-                    document.getElementById('fileInfo').classList.remove('show');
-                    updateTaskList();
-                } else {
-                    showNotification(data.error || 'Failed to start task', 'error');
-                }
-            })
-            .catch(error => {
-                submitText.style.display = 'inline';
-                submitLoading.style.display = 'none';
-                showNotification('Error: ' + error.message, 'error');
-            });
-        });
-        
-        // File input change handler
-        document.getElementById('passwordFile').addEventListener('change', function(e) {
-            if (e.target.files.length) {
-                const file = e.target.files[0];
-                document.getElementById('fileName').textContent = file.name;
-                
-                // Preview password count
-                const formData = new FormData();
-                formData.append('passwordFile', file);
-                
-                fetch('/api/preview', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('passwordCount').textContent = data.password_count;
-                        document.getElementById('fileInfo').classList.add('show');
-                    }
-                });
-            }
-        });
-        
-        // Poll for task updates
-        function pollTasks() {
-            updateTaskList();
-            setTimeout(pollTasks, 2000);
-        }
-        
-        // Start polling
-        pollTasks();
-        
-        // Initial load
-        updateTaskList();
-    </script>
-</body>
-</html>
-"""
+os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
-@app.route('/')
+
+def parse_usernames(raw: str) -> list[str]:
+    parts = []
+    for chunk in raw.replace("\n", ",").split(","):
+        name = chunk.strip().lstrip("@")
+        if name:
+            parts.append(name)
+    # preserve order, drop dupes
+    seen = set()
+    unique = []
+    for name in parts:
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(name)
+    return unique
+
+
+def collect_passwords_from_request():
+    """Accept file upload, paste body, or sample wordlist."""
+    source = (request.form.get("source") or "upload").strip().lower()
+    filepath = None
+
+    if source == "sample":
+        sample = password_processor.sample_passwords_path()
+        if not sample.exists():
+            return None, {"success": False, "error": "Sample wordlist missing"}, 500
+        result = password_processor.process_password_file(str(sample))
+        return result, None, None
+
+    if source == "paste" or (request.form.get("passwords") and "passwordFile" not in request.files):
+        text = (request.form.get("passwords") or "").strip()
+        if not text:
+            return None, {"success": False, "error": "Paste at least one password"}, 400
+        result = password_processor.process_password_text(text, label="pasted.txt")
+        return result, None, None
+
+    if "passwordFile" not in request.files:
+        return None, {"success": False, "error": "No password file uploaded"}, 400
+
+    file_storage = request.files["passwordFile"]
+    if not file_storage or not file_storage.filename:
+        return None, {"success": False, "error": "No file selected"}, 400
+
+    filepath = password_processor.save_uploaded_file(file_storage)
+    if not filepath:
+        return None, {"success": False, "error": "Invalid file type. Use .txt, .csv, or .json"}, 400
+
+    result = password_processor.process_password_file(filepath)
+    if not result["success"]:
+        password_processor.cleanup_file(filepath)
+        return None, {"success": False, "error": result["error"]}, 500
+
+    result["_filepath"] = filepath
+    return result, None, None
+
+
+@app.route("/")
 def index():
-    """Main page"""
-    return render_template_string(
-        MAIN_TEMPLATE,
+    return render_template(
+        "index.html",
+        app_name=config.APP_NAME,
+        tagline=config.APP_TAGLINE,
         replica_id=config.REPLICA_ID,
-        target_url=config.MOCK_API_BASE_URL,
+        mock_url=config.MOCK_API_BASE_URL,
+        rate_limit=config.INSTAGRAM_RATE_LIMIT,
+        max_concurrent=config.MAX_CONCURRENT_CHECKS,
     )
 
-@app.route('/health')
+
+@app.route("/health")
 def health():
-    """Health check endpoint for Railway"""
-    return jsonify({
-        'status': 'healthy',
-        'replica_id': config.REPLICA_ID,
-        'target_url': config.MOCK_API_BASE_URL,
-        'timestamp': datetime.now().isoformat()
-    })
+    return jsonify(
+        {
+            "status": "healthy",
+            "app": config.APP_NAME,
+            "replica_id": config.REPLICA_ID,
+            "target_url": config.MOCK_API_BASE_URL,
+            "stats": task_manager.stats(),
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
 
 
-@app.route('/api/preview', methods=['POST'])
+@app.route("/api/meta")
+def meta():
+    return jsonify(
+        {
+            "success": True,
+            "app": config.APP_NAME,
+            "tagline": config.APP_TAGLINE,
+            "mock_url": config.MOCK_API_BASE_URL,
+            "replica_id": config.REPLICA_ID,
+            "rate_limit": config.INSTAGRAM_RATE_LIMIT,
+            "max_concurrent": config.MAX_CONCURRENT_CHECKS,
+            "max_passwords": config.MAX_PASSWORDS,
+            "stats": task_manager.stats(),
+        }
+    )
+
+
+@app.route("/api/preview", methods=["POST"])
 def preview_file():
-    """Preview password file to get password count"""
     try:
-        if 'passwordFile' not in request.files:
-            return jsonify({'success': False, 'error': 'No file uploaded'}), 400
-        
-        file_storage = request.files['passwordFile']
-        if file_storage.filename == '':
-            return jsonify({'success': False, 'error': 'No file selected'}), 400
-        
-        # Save temporarily to process with original extension
-        filename = file_storage.filename or "temp"
-        temp_path = os.path.join(config.UPLOAD_FOLDER, f"temp_{uuid.uuid4()}_{filename}")
+        if request.form.get("passwords"):
+            result = password_processor.process_password_text(request.form["passwords"])
+            return jsonify(
+                {
+                    "success": result["success"],
+                    "password_count": result["password_count"],
+                    "filename": result["filename"],
+                    "preview": result["passwords"][:8],
+                }
+            )
+
+        if "passwordFile" not in request.files:
+            return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+        file_storage = request.files["passwordFile"]
+        if not file_storage.filename:
+            return jsonify({"success": False, "error": "No file selected"}), 400
+
+        temp_path = os.path.join(
+            config.UPLOAD_FOLDER,
+            f"temp_{uuid.uuid4()}_{password_processor.sanitize_filename(file_storage.filename)}",
+        )
         file_storage.save(temp_path)
-        
         try:
             result = password_processor.process_password_file(temp_path)
-            return jsonify({
-                'success': result['success'],
-                'password_count': result['password_count'],
-                'filename': result['filename']
-            })
+            return jsonify(
+                {
+                    "success": result["success"],
+                    "password_count": result["password_count"],
+                    "filename": result["filename"],
+                    "preview": result["passwords"][:8],
+                    "error": result.get("error"),
+                }
+            )
         finally:
-            # Clean up temp file
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-                
-    except Exception as e:
-        logger.error(f"Preview error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    except Exception as exc:
+        logger.exception("Preview error")
+        return jsonify({"success": False, "error": str(exc)}), 500
 
-@app.route('/api/tasks', methods=['GET'])
+
+@app.route("/api/sample")
+def sample_wordlist():
+    path = password_processor.sample_passwords_path()
+    if not path.exists():
+        return jsonify({"success": False, "error": "Sample missing"}), 404
+    return send_from_directory(path.parent, path.name, as_attachment=True)
+
+
+@app.route("/api/tasks", methods=["GET"])
 def get_tasks():
-    """Get all tasks"""
     try:
-        all_tasks = task_manager.get_all_tasks()
-        tasks_data = [task.to_dict() for task in all_tasks]
-        
-        return jsonify({
-            'success': True,
-            'tasks': tasks_data,
-            'count': len(tasks_data)
-        })
-    except Exception as e:
-        logger.error(f"Error getting tasks: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/tasks', methods=['POST'])
-def create_task():
-    """Create a new BFa task"""
-    try:
-        if 'passwordFile' not in request.files:
-            return jsonify({'success': False, 'error': 'No password file uploaded'}), 400
-        
-        if 'usernames' not in request.form or not request.form['usernames'].strip():
-            return jsonify({'success': False, 'error': 'No usernames provided'}), 400
-        
-        file_storage = request.files['passwordFile']
-        usernames_input = request.form['usernames'].strip()
-        
-        # Process usernames
-        usernames = [u.strip() for u in usernames_input.split(',') if u.strip()]
-        if not usernames:
-            return jsonify({'success': False, 'error': 'No valid usernames provided'}), 400
-        
-        # Save the file
-        filepath = password_processor.save_uploaded_file(file_storage)
-        if not filepath:
-            return jsonify({'success': False, 'error': 'Failed to save file'}), 500
-        
-        # Process the password file
-        result = password_processor.process_password_file(filepath)
-        if not result['success']:
-            password_processor.cleanup_file(filepath)
-            return jsonify({'success': False, 'error': result['error']}), 500
-        
-        passwords = result['passwords']
-        if not passwords:
-            password_processor.cleanup_file(filepath)
-            return jsonify({'success': False, 'error': 'No passwords found in file'}), 400
-        
-        # Create task
-        # Create the task directly with all properties
-        task = BFaTask(
-            username=usernames[0] if len(usernames) == 1 else "",
-            usernames=usernames,
-            password_file=result['filename'],
-            passwords=passwords,
-            total=len(passwords) * len(usernames),
-            replica_id=config.REPLICA_ID
+        status = (request.args.get("status") or "").strip().lower()
+        tasks = task_manager.get_all_tasks()
+        if status:
+            tasks = [t for t in tasks if t.status == status]
+        return jsonify(
+            {
+                "success": True,
+                "tasks": [t.to_dict() for t in tasks],
+                "count": len(tasks),
+                "stats": task_manager.stats(),
+            }
         )
-        
-        # Store the task in the manager
-        task_manager.tasks[task.task_id] = task
-        
-        # Start processing in background
+    except Exception as exc:
+        logger.exception("Error getting tasks")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/tasks", methods=["POST"])
+def create_task():
+    try:
+        usernames_raw = (request.form.get("usernames") or "").strip()
+        if not usernames_raw:
+            return jsonify({"success": False, "error": "Enter at least one username"}), 400
+
+        usernames = parse_usernames(usernames_raw)
+        if not usernames:
+            return jsonify({"success": False, "error": "No valid usernames provided"}), 400
+
+        stop_on_first = (request.form.get("stop_on_first") or "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        result, err, code = collect_passwords_from_request()
+        if err:
+            return jsonify(err), code
+
+        passwords = result["passwords"]
+        if not passwords:
+            filepath = result.get("_filepath")
+            if filepath:
+                password_processor.cleanup_file(filepath)
+            return jsonify({"success": False, "error": "No passwords found"}), 400
+
+        source = (request.form.get("source") or result.get("filename") or "upload").lower()
+        if source not in ("upload", "paste", "sample"):
+            source = "paste" if result.get("filename") == "pasted.txt" else "upload"
+
+        task = task_manager.create_task(
+            usernames=usernames,
+            password_file=result.get("filename") or "passwords.txt",
+            passwords=passwords,
+            stop_on_first=stop_on_first,
+            source=source,
+            replica_id=config.REPLICA_ID,
+        )
+
+        filepath = result.get("_filepath")
         threading.Thread(
             target=process_task_background,
             args=(task.task_id, filepath),
-            daemon=True
+            daemon=True,
         ).start()
-        
-        return jsonify({
-            'success': True,
-            'task_id': task.task_id,
-            'message': f'Task created with {len(passwords)} passwords for {len(usernames)} usernames'
-        })
-        
-    except Exception as e:
-        logger.error(f"Error creating task: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/tasks/<task_id>', methods=['GET'])
+        return jsonify(
+            {
+                "success": True,
+                "task_id": task.task_id,
+                "message": f"Started — {len(passwords)} passwords × {len(usernames)} usernames",
+                "task": task.to_dict(),
+            }
+        )
+    except Exception as exc:
+        logger.exception("Error creating task")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/tasks/<task_id>", methods=["GET"])
 def get_task(task_id: str):
-    """Get a specific task"""
-    try:
-        task = task_manager.get_task(task_id)
-        if not task:
-            return jsonify({'success': False, 'error': 'Task not found'}), 404
-        
-        return jsonify({'success': True, 'task': task.to_dict()})
-    except Exception as e:
-        logger.error(f"Error getting task {task_id}: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    task = task_manager.get_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    return jsonify({"success": True, "task": task.to_dict()})
 
-@app.route('/api/tasks/<task_id>', methods=['DELETE'])
+
+@app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+def cancel_task(task_id: str):
+    task = task_manager.cancel_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    return jsonify({"success": True, "message": "Cancel requested", "task": task.to_dict()})
+
+
+@app.route("/api/tasks/<task_id>", methods=["DELETE"])
 def delete_task(task_id: str):
-    """Delete a task"""
-    try:
-        task = task_manager.get_task(task_id)
-        if not task:
-            return jsonify({'success': False, 'error': 'Task not found'}), 404
-        
-        # Clean up the password file if it exists
-        if task.password_file:
-            file_path = os.path.join(config.UPLOAD_FOLDER, task.password_file)
-            password_processor.cleanup_file(file_path)
-        
-        task_manager.delete_task(task_id)
-        return jsonify({'success': True, 'message': 'Task deleted'})
-    except Exception as e:
-        logger.error(f"Error deleting task {task_id}: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    task = task_manager.get_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    if task.status in ("pending", "processing"):
+        task.cancel_requested = True
+        # give worker a beat, then delete
+        time.sleep(0.05)
+    if task.password_file and task.source == "upload":
+        file_path = os.path.join(config.UPLOAD_FOLDER, task.password_file)
+        password_processor.cleanup_file(file_path)
+    task_manager.delete_task(task_id)
+    return jsonify({"success": True, "message": "Task deleted"})
 
-def process_task_background(task_id: str, filepath: str):
-    """Process a task in the background"""
+
+@app.route("/api/tasks/clear-finished", methods=["POST"])
+def clear_finished():
+    removed = task_manager.clear_finished()
+    return jsonify({"success": True, "removed": removed, "stats": task_manager.stats()})
+
+
+@app.route("/api/tasks/<task_id>/export", methods=["GET"])
+def export_task(task_id: str):
+    task = task_manager.get_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    payload = task.to_dict()
+    payload["results"] = task.results  # full results for export
+    return jsonify({"success": True, "export": payload})
+
+
+def process_task_background(task_id: str, filepath: str | None) -> None:
     try:
-        # Small delay to ensure task is fully stored
-        time.sleep(0.1)
-        
+        time.sleep(0.05)
         task = task_manager.get_task(task_id)
         if not task:
-            logger.error(f"Task {task_id} not found in task manager")
-            # Try to recover by checking all tasks
-            all_tasks = task_manager.get_all_tasks()
-            logger.error(f"Available tasks: {[t.task_id for t in all_tasks]}")
+            logger.error("Task %s not found", task_id)
             return
-        
-        # Update task status
+
         task.status = "processing"
         task.start_time = datetime.now()
         task_manager.update_task(task)
-        
-        logger.info(f"Starting task {task_id} for {len(task.usernames)} usernames with {len(task.passwords)} passwords")
-        
-        # Process each username
+        logger.info(
+            "Task %s: %s users × %s passwords via %s",
+            task_id,
+            len(task.usernames),
+            len(task.passwords),
+            config.MOCK_API_BASE_URL,
+        )
+
+        stop_all = False
         for username in task.usernames:
-            if task.status == "failed":
+            if stop_all or task.cancel_requested:
                 break
-                
-            logger.info(f"Processing username: {username}")
-            
-            # Process passwords in batches for better performance
+
             for password_batch in password_processor.get_password_generator(
                 task.passwords, config.BATCH_SIZE
             ):
-                if task.status == "failed":
+                if stop_all or task.cancel_requested:
                     break
-                    
-                # Check each password in the batch
+
                 for password in password_batch:
-                    if task.status == "failed":
+                    # refresh cancel flag
+                    live = task_manager.get_task(task_id)
+                    if not live or live.cancel_requested:
+                        task.cancel_requested = True
+                        stop_all = True
                         break
-                        
+
                     try:
                         result = instagram_handler.check_credentials(username, password)
-                        
-                        # Update progress
                         task.progress += 1
-                        
+
+                        entry = {
+                            "username": username,
+                            "password": password if result.success else "***",
+                            "success": result.success,
+                            "message": result.message,
+                            "error_type": result.error_type,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        task.results.append(entry)
+
                         if result.success:
-                            task.successful_logins.append({
-                                'username': username,
-                                'password': password,
-                                'profile': result.profile,
-                                'timestamp': datetime.now().isoformat()
-                            })
-                            
-                            logger.info(f"SUCCESS: {username}:{password}")
-                            
-                            # We can stop here if we want to find just one valid password
-                            # But continue to find all valid passwords
-                            
-                        task.results.append({
-                            'username': username,
-                            'password': password if result.success else "***",
-                            'success': result.success,
-                            'message': result.message,
-                            'error_type': result.error_type,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        
+                            task.successful_logins.append(
+                                {
+                                    "username": username,
+                                    "password": password,
+                                    "profile": result.profile,
+                                    "timestamp": datetime.now().isoformat(),
+                                }
+                            )
+                            logger.info("HIT %s (mock)", username)
+                            if task.stop_on_first:
+                                stop_all = True
+                                break
+                        else:
+                            task.failed_attempts += 1
+
                         task_manager.update_task(task)
-                        
-                    except Exception as e:
-                        logger.error(f"Error checking {username}:{password}: {e}")
+                    except Exception as exc:
+                        logger.error("Check failed %s: %s", username, exc)
                         task.failed_attempts += 1
                         task.progress += 1
                         task_manager.update_task(task)
-                        
-                        # Add a small delay to avoid overwhelming the system
-                        time.sleep(0.1)
-                
-                # Small delay between batches to respect rate limits
-                time.sleep(1)
-        
-        # Mark task as completed
-        task.status = "completed"
+
+                time.sleep(0.05)
+
+        if task.cancel_requested:
+            task.status = "cancelled"
+        else:
+            task.status = "completed"
         task.end_time = datetime.now()
         task_manager.update_task(task)
-        
-        logger.info(f"Task {task_id} completed. Found {len(task.successful_logins)} valid logins.")
-        
-        # Clean up the file
-        password_processor.cleanup_file(filepath)
-        
-    except Exception as e:
-        logger.error(f"Error processing task {task_id}: {e}")
-        
+        logger.info(
+            "Task %s %s — %s hits",
+            task_id,
+            task.status,
+            len(task.successful_logins),
+        )
+
+        if filepath:
+            password_processor.cleanup_file(filepath)
+    except Exception as exc:
+        logger.exception("Task %s crashed", task_id)
         task = task_manager.get_task(task_id)
         if task:
             task.status = "failed"
-            task.error = str(e)
+            task.error = str(exc)
             task.end_time = datetime.now()
             task_manager.update_task(task)
 
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    """Serve uploaded files"""
-    return send_from_directory(config.UPLOAD_FOLDER, filename)
 
-if __name__ == '__main__':
-    # Create upload folder
-    os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
-    
-    logger.info(f"Starting Instagram Mock BFa on {config.HOST}:{config.PORT}")
-    logger.info(f"Mock API base: {config.MOCK_API_BASE_URL}")
-    logger.info(f"Replica ID: {config.REPLICA_ID}")
-    logger.info(f"Max concurrent checks: {config.MAX_CONCURRENT_CHECKS}")
-    logger.info(f"Rate limit: {config.INSTAGRAM_RATE_LIMIT}/min")
-    
+if __name__ == "__main__":
+    logger.info("Starting %s on %s:%s", config.APP_NAME, config.HOST, config.PORT)
+    logger.info("Mock target: %s", config.MOCK_API_BASE_URL)
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, threaded=True)

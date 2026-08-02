@@ -1,6 +1,6 @@
 {
-  "name": "instagram-bfa",
-  "description": "Instagram Brute Force Attack tool with web interface",
+  "name": "mocka",
+  "description": "MOCKA — Mock Instagram auth lab",
   "environment": {
     "PORT": 8080,
     "WORKERS": 4,

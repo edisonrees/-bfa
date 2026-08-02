@@ -1,22 +1,19 @@
-# Instagram Mock BFa Tool
+# MOCKA — Mock Instagram Auth Lab
 
-Web UI for credential testing using **instaloader**, with all Instagram HTTP traffic routed through a mock demo API — never hitting real `instagram.com`.
+Premium web UI for auth-testing workflows using **instaloader**, with every Instagram HTTP request rewritten to a mock demo API.
 
-## Mock proxy
+## What it does
 
-All `www.instagram.com` and `i.instagram.com` requests are rewritten to:
+- Upload / paste / sample wordlists
+- Run credential checks through `MOCK_API_BASE_URL`
+- Live progress, ETA, cancel, export, clear finished
+- Never talks to production Instagram while the mock proxy is enabled
+
+## Default mock route
 
 ```
-https://instagram.mockapis.com/v1/api/mock/com.instgram.com/
+https://instagram.mockapis.com/v1/api/mock/com.instgram.com
 ```
-
-Example:
-
-| Original | Routed to |
-|----------|-----------|
-| `https://www.instagram.com/api/v1/web/accounts/login/ajax/` | `https://instagram.mockapis.com/v1/api/mock/com.instgram.com/api/v1/web/accounts/login/ajax/` |
-
-Configure via `MOCK_API_BASE_URL` in `.env`.
 
 ## Quick start
 
@@ -24,26 +21,31 @@ Configure via `MOCK_API_BASE_URL` in `.env`.
 py -3 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
+copy .env.example .env
 py -3 app.py
 ```
 
 Open `http://localhost:8080`.
 
-## Environment
+## QoL features
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MOCK_API_BASE_URL` | `https://instagram.mockapis.com/v1/api/mock/com.instgram.com` | Mock Instagram API base |
-| `INSTAGRAM_RATE_LIMIT` | 60 | Requests per minute |
-| `INSTAGRAM_TIMEOUT` | 30 | Request timeout (seconds) |
-| `MAX_CONCURRENT_CHECKS` | 10 | Parallel password checks |
+- Drag-and-drop wordlists
+- Paste passwords without a file
+- Built-in sample list
+- Stop on first hit
+- Cancel / delete / export JSON
+- Keyboard shortcut: `Ctrl/⌘ + Enter`
+- Live stats + status filters
+- Mock-target badge always visible
 
-## Stack
+## Env
 
-- Flask web UI
-- instaloader for Instagram-style login/profile flow
-- `mock_proxy.py` patches `requests.Session` to rewrite URLs
+| Variable | Default |
+|----------|---------|
+| `MOCK_API_BASE_URL` | `https://instagram.mockapis.com/v1/api/mock/com.instgram.com` |
+| `INSTAGRAM_RATE_LIMIT` | `60` |
+| `MAX_CONCURRENT_CHECKS` | `5` |
+| `MAX_PASSWORDS` | `5000` |
 
 ## Tests
 
@@ -53,4 +55,4 @@ py -3 test_app.py
 
 ## Security
 
-For authorized testing against mock/demo endpoints only. Do not point at production Instagram.
+Authorized mock/demo testing only. Do not point `MOCK_API_BASE_URL` at production Instagram.

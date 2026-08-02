@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }} — {{ tagline }}</title>
+  <meta name="description" content="Mock Instagram auth testing lab. All traffic routes through a demo mock API." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <div class="noise" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">{{ app_name }}</div>
+        <div class="brand-sub">{{ tagline }}</div>
+      </div>
+    </div>
+    <div class="topbar-meta">
+      <span class="pill pill-mock" title="{{ mock_url }}">MOCK TARGET</span>
+      <span class="pill" id="replicaPill">R{{ replica_id }}</span>
+      <span class="pill pill-live" id="healthPill">checking…</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="composer" aria-labelledby="composer-title">
+      <div class="section-head">
+        <h1 id="composer-title">New run</h1>
+        <p>Point wordlists at the mock Instagram API. Nothing hits production Instagram.</p>
+      </div>
+
+      <form id="runForm" class="run-form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">Usernames</span>
+          <textarea id="usernames" name="usernames" rows="2" placeholder="alice, bob&#10;@charlie" required></textarea>
+          <span class="field-hint">Comma or newline separated. @ is optional.</span>
+        </label>
+
+        <div class="source-tabs" role="tablist" aria-label="Password source">
+          <button type="button" class="tab is-active" data-source="upload" role="tab" aria-selected="true">Upload</button>
+          <button type="button" class="tab" data-source="paste" role="tab" aria-selected="false">Paste</button>
+          <button type="button" class="tab" data-source="sample" role="tab" aria-selected="false">Sample</button>
+        </div>
+        <input type="hidden" id="source" name="source" value="upload" />
+
+        <div id="panel-upload" class="source-panel is-active">
+          <label class="dropzone" id="dropzone" for="passwordFile">
+            <input type="file" id="passwordFile" name="passwordFile" accept=".txt,.csv,.json" />
+            <span class="drop-title">Drop wordlist here</span>
+            <span class="drop-sub">.txt · .csv · .json — or click to browse</span>
+          </label>
+          <div class="file-meta" id="fileMeta" hidden>
+            <strong id="fileName">—</strong>
+            <span id="fileCount">0 passwords</span>
+            <div class="chip-row" id="filePreview"></div>
+          </div>
+        </div>
+
+        <div id="panel-paste" class="source-panel" hidden>
+          <label class="field">
+            <span class="field-label">Passwords</span>
+            <textarea id="passwords" name="passwords" rows="8" placeholder="password1&#10;password2&#10;user:passA,passB"></textarea>
+            <span class="field-hint" id="pasteHint">0 passwords parsed</span>
+          </label>
+        </div>
+
+        <div id="panel-sample" class="source-panel" hidden>
+          <div class="sample-card">
+            <div>
+              <strong>Built-in demo list</strong>
+              <p>Small curated wordlist for smoke-testing the mock route.</p>
+            </div>
+            <a class="link" href="/api/sample" download>Download</a>
+          </div>
+        </div>
+
+        <label class="toggle">
+          <input type="checkbox" id="stopOnFirst" name="stop_on_first" checked />
+          <span>Stop on first hit</span>
+        </label>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" id="submitBtn">
+            <span id="submitLabel">Start run</span>
+            <kbd>⌘/Ctrl + Enter</kbd>
+          </button>
+        </div>
+      </form>
+
+      <aside class="route-card">
+        <div class="route-label">Traffic route</div>
+        <code id="mockUrl" title="{{ mock_url }}">{{ mock_url }}</code>
+        <div class="route-grid">
+          <div><span>Rate</span><strong>{{ rate_limit }}/min</strong></div>
+          <div><span>Concurrency</span><strong>{{ max_concurrent }}</strong></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="board" aria-labelledby="board-title">
+      <div class="board-head">
+        <div>
+          <h2 id="board-title">Live board</h2>
+          <p id="boardSub">Waiting for runs</p>
+        </div>
+        <div class="board-tools">
+          <div class="filter-group" role="group" aria-label="Filter tasks">
+            <button type="button" class="chip is-active" data-filter="all">All</button>
+            <button type="button" class="chip" data-filter="processing">Active</button>
+            <button type="button" class="chip" data-filter="completed">Done</button>
+            <button type="button" class="chip" data-filter="hits">Hits</button>
+          </div>
+          <button type="button" class="btn btn-ghost" id="clearFinished">Clear finished</button>
+        </div>
+      </div>
+
+      <div class="stats" id="stats">
+        <div class="stat"><span id="statActive">0</span><label>Active</label></div>
+        <div class="stat"><span id="statHits">0</span><label>Hits</label></div>
+        <div class="stat"><span id="statAttempts">0</span><label>Attempts</label></div>
+        <div class="stat"><span id="statDone">0</span><label>Finished</label></div>
+      </div>
+
+      <div id="taskList" class="task-list" aria-live="polite"></div>
+      <div id="emptyState" class="empty">
+        <div class="empty-orb" aria-hidden="true"></div>
+        <h3>No runs yet</h3>
+        <p>Drop a wordlist, paste passwords, or load the sample — then hit Start.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="detailDialog" class="dialog">
+    <form method="dialog" class="dialog-inner">
+      <header>
+        <h3 id="detailTitle">Task</h3>
+        <button type="submit" class="btn btn-ghost" value="close">Close</button>
+      </header>
+      <pre id="detailBody"></pre>
+      <footer>
+        <button type="button" class="btn btn-ghost" id="copyExport">Copy JSON</button>
+        <a class="btn btn-primary" id="downloadExport" href="#" download="task.json">Download</a>
+      </footer>
+    </form>
+  </dialog>
+
+  <script>
+    window.MOCKA = {
+      mockUrl: {{ mock_url|tojson }},
+      replicaId: {{ replica_id|tojson }},
+      pollMs: 1500
+    };
+  </script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

@@ -1,208 +1,185 @@
-"""
-Password File Processor for Local Auth BFa
-Handles various password file formats and optimizes processing
-"""
+"""Password file / paste processor."""
 
-import os
-import re
+from __future__ import annotations
+
 import csv
 import json
-from typing import List, Generator, Optional
+import os
+import re
 from pathlib import Path
+from typing import Generator, List, Optional
 import logging
+
 from config import config
 
 logger = logging.getLogger(__name__)
 
+
 class PasswordFileProcessor:
-    def __init__(self):
+    def __init__(self) -> None:
         self.upload_folder = config.UPLOAD_FOLDER
         self.allowed_extensions = config.ALLOWED_EXTENSIONS
-        
-        # Create upload folder if it doesn't exist
         os.makedirs(self.upload_folder, exist_ok=True)
-        
+
     def allowed_file(self, filename: str) -> bool:
-        """Check if the file has an allowed extension"""
-        return '.' in filename and \
-               filename.rsplit('.', 1)[1].lower() in self.allowed_extensions
+        return "." in filename and filename.rsplit(".", 1)[1].lower() in self.allowed_extensions
 
     def sanitize_filename(self, filename: str) -> str:
-        """Sanitize the filename to prevent directory traversal"""
-        # Remove any path information
         filename = os.path.basename(filename)
-        # Remove any special characters that could be problematic
-        filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-        return filename
+        return re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
 
     def save_uploaded_file(self, file_storage) -> Optional[str]:
-        """Save an uploaded file to the upload folder"""
-        if not file_storage:
+        if not file_storage or not file_storage.filename:
             return None
-            
         filename = self.sanitize_filename(file_storage.filename)
         if not self.allowed_file(filename):
             return None
-            
         filepath = os.path.join(self.upload_folder, filename)
-        
         try:
             file_storage.save(filepath)
-            logger.info(f"File saved: {filepath}")
             return filepath
-        except Exception as e:
-            logger.error(f"Error saving file: {e}")
+        except Exception as exc:
+            logger.error("Error saving file: %s", exc)
             return None
 
-    def parse_password_file(self, filepath: str) -> List[str]:
-        """Parse password file based on its extension"""
-        extension = os.path.splitext(filepath)[1].lower()
-        
-        try:
-            if extension == '.txt':
-                return self._parse_txt_file(filepath)
-            elif extension == '.csv':
-                return self._parse_csv_file(filepath)
-            elif extension == '.json':
-                return self._parse_json_file(filepath)
+    def parse_password_text(self, text: str) -> List[str]:
+        passwords: List[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                password_part = line.split(":", 1)[1].strip()
+                if "," in password_part:
+                    passwords.extend(p.strip() for p in password_part.split(",") if p.strip())
+                elif password_part:
+                    passwords.append(password_part)
+            elif "," in line:
+                passwords.extend(p.strip() for p in line.split(",") if p.strip())
             else:
-                # Try to parse as text file
-                return self._parse_txt_file(filepath)
-        except Exception as e:
-            logger.error(f"Error parsing file {filepath}: {e}")
-            raise
+                passwords.append(line)
+        return self._dedupe(passwords)
 
-    def _parse_txt_file(self, filepath: str) -> List[str]:
-        """Parse a text file with various password formats"""
-        passwords = []
-        
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                    
-                # Handle different formats:
-                # - password1
-                # - password1,pas2,pas3
-                # - user:password
-                # - username:password1,pas2,pas3
-                
-                if ':' in line:
-                    # Handle user:password format
-                    parts = line.split(':', 1)
-                    password_part = parts[1].strip()
-                    if ',' in password_part:
-                        # Multiple passwords for this user
-                        pass_list = [p.strip() for p in password_part.split(',') if p.strip()]
-                        passwords.extend(pass_list)
-                    else:
-                        passwords.append(password_part)
-                elif ',' in line:
-                    # Handle comma-separated passwords
-                    pass_list = [p.strip() for p in line.split(',') if p.strip()]
-                    passwords.extend(pass_list)
-                else:
-                    # Single password
-                    passwords.append(line)
-        
-        return passwords
+    def parse_password_file(self, filepath: str) -> List[str]:
+        extension = os.path.splitext(filepath)[1].lower()
+        if extension == ".csv":
+            return self._parse_csv_file(filepath)
+        if extension == ".json":
+            return self._parse_json_file(filepath)
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as handle:
+            return self.parse_password_text(handle.read())
 
     def _parse_csv_file(self, filepath: str) -> List[str]:
-        """Parse a CSV file with passwords"""
-        passwords = []
-        
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.reader(f)
+        passwords: List[str] = []
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as handle:
+            reader = csv.reader(handle)
             for row_index, row in enumerate(reader):
                 if not row:
                     continue
-                    
-                # Skip header row (first row) if it looks like a header
-                if row_index == 0 and len(row) > 0:
-                    first_cell = row[0].strip().lower()
-                    if first_cell in ['password', 'passwords', 'pass', 'username', 'user']:
-                        continue
-                    
+                if row_index == 0 and row[0].strip().lower() in {
+                    "password",
+                    "passwords",
+                    "pass",
+                    "username",
+                    "user",
+                }:
+                    continue
                 for cell in row:
                     cell = cell.strip()
-                    if cell and not cell.startswith('#'):
+                    if cell and not cell.startswith("#"):
                         passwords.append(cell)
-        
-        return passwords
+        return self._dedupe(passwords)
 
     def _parse_json_file(self, filepath: str) -> List[str]:
-        """Parse a JSON file with passwords"""
-        passwords = []
-        
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            data = json.load(f)
-            
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, str):
-                        passwords.append(item)
-                    elif isinstance(item, dict):
-                        if 'password' in item:
-                            passwords.append(item['password'])
-                        elif 'pass' in item:
-                            passwords.append(item['pass'])
-            elif isinstance(data, dict):
-                if 'passwords' in data:
-                    passwords.extend(data['passwords'])
-                elif 'password' in data:
-                    passwords.append(data['password'])
-        
-        return passwords
+        passwords: List[str] = []
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, str):
+                    passwords.append(item)
+                elif isinstance(item, dict):
+                    value = item.get("password") or item.get("pass")
+                    if value:
+                        passwords.append(str(value))
+        elif isinstance(data, dict):
+            if "passwords" in data and isinstance(data["passwords"], list):
+                passwords.extend(str(p) for p in data["passwords"])
+            elif "password" in data:
+                passwords.append(str(data["password"]))
+        return self._dedupe(passwords)
+
+    def _dedupe(self, passwords: List[str]) -> List[str]:
+        seen = set()
+        unique: List[str] = []
+        for password in passwords:
+            if password and password not in seen:
+                seen.add(password)
+                unique.append(password)
+        limit = getattr(config, "MAX_PASSWORDS", 5000)
+        return unique[:limit]
 
     def process_password_file(self, filepath: str) -> dict:
-        """Process a password file and return structured data"""
         try:
             passwords = self.parse_password_file(filepath)
-            
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_passwords = []
-            for password in passwords:
-                if password and password not in seen:
-                    seen.add(password)
-                    unique_passwords.append(password)
-            
             return {
-                'success': True,
-                'filepath': filepath,
-                'filename': os.path.basename(filepath),
-                'password_count': len(unique_passwords),
-                'passwords': unique_passwords,
-                'error': None
+                "success": True,
+                "filepath": filepath,
+                "filename": os.path.basename(filepath),
+                "password_count": len(passwords),
+                "passwords": passwords,
+                "error": None,
             }
-        except Exception as e:
-            logger.error(f"Error processing file {filepath}: {e}")
+        except Exception as exc:
+            logger.error("Error processing file %s: %s", filepath, exc)
             return {
-                'success': False,
-                'filepath': filepath,
-                'filename': os.path.basename(filepath),
-                'password_count': 0,
-                'passwords': [],
-                'error': str(e)
+                "success": False,
+                "filepath": filepath,
+                "filename": os.path.basename(filepath),
+                "password_count": 0,
+                "passwords": [],
+                "error": str(exc),
             }
 
-    def get_password_generator(self, passwords: List[str], batch_size: int = 100) -> Generator[List[str], None, None]:
-        """Generate batches of passwords for processing"""
+    def process_password_text(self, text: str, label: str = "pasted.txt") -> dict:
+        try:
+            passwords = self.parse_password_text(text)
+            return {
+                "success": True,
+                "filepath": None,
+                "filename": label,
+                "password_count": len(passwords),
+                "passwords": passwords,
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "filepath": None,
+                "filename": label,
+                "password_count": 0,
+                "passwords": [],
+                "error": str(exc),
+            }
+
+    def get_password_generator(
+        self, passwords: List[str], batch_size: int = 100
+    ) -> Generator[List[str], None, None]:
         for i in range(0, len(passwords), batch_size):
-            yield passwords[i:i + batch_size]
+            yield passwords[i : i + batch_size]
 
     def cleanup_file(self, filepath: str) -> bool:
-        """Remove a file from the upload folder"""
         try:
-            if os.path.exists(filepath):
+            if filepath and os.path.exists(filepath):
                 os.remove(filepath)
-                logger.info(f"File removed: {filepath}")
                 return True
             return False
-        except Exception as e:
-            logger.error(f"Error removing file {filepath}: {e}")
+        except Exception as exc:
+            logger.error("Error removing file %s: %s", filepath, exc)
             return False
 
-# Singleton instance
+    def sample_passwords_path(self) -> Path:
+        return Path(__file__).resolve().parent / "static" / "sample-passwords.txt"
+
+
 password_processor = PasswordFileProcessor()
