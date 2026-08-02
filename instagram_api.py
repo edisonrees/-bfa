@@ -22,9 +22,10 @@ from instaloader.exceptions import (  # noqa: E402
     BadCredentialsException,
     ConnectionException,
     InstaloaderException,
-    LoginException,
+    InvalidArgumentException,
     LoginRequiredException,
     ProfileNotExistsException,
+    TwoFactorAuthRequiredException,
 )
 from instaloader.structures import Profile  # noqa: E402
 
@@ -122,7 +123,7 @@ class InstagramAPIHandler:
                         message="Invalid username",
                         error_type="invalid_username",
                     )
-                if "password" in error_msg.lower() or "credentials" in error_msg.lower():
+                if "password" in error_msg.lower() or "credentials" in error_msg.lower() or "wrong password" in error_msg.lower():
                     return LoginResult(
                         success=False,
                         username=username,
@@ -137,7 +138,7 @@ class InstagramAPIHandler:
                     message=f"Login error: {error_msg}",
                     error_type="login_error",
                 )
-            except LoginException as exc:
+            except InvalidArgumentException as exc:
                 error_msg = str(exc)
                 if "does not exist" in error_msg.lower():
                     return LoginResult(
@@ -154,6 +155,14 @@ class InstagramAPIHandler:
                     message=f"Login error: {error_msg}",
                     error_type="login_error",
                 )
+            except TwoFactorAuthRequiredException as exc:
+                return LoginResult(
+                    success=False,
+                    username=username,
+                    password=password,
+                    message=f"Two-factor authentication required: {exc}",
+                    error_type="login_error",
+                )
             except ProfileNotExistsException:
                 return LoginResult(
                     success=False,
@@ -163,6 +172,23 @@ class InstagramAPIHandler:
                     error_type="invalid_username",
                 )
             except ConnectionException as exc:
+                error_msg = str(exc)
+                if "does not exist" in error_msg.lower():
+                    return LoginResult(
+                        success=False,
+                        username=username,
+                        password=password,
+                        message="Invalid username",
+                        error_type="invalid_username",
+                    )
+                if "wrong password" in error_msg.lower():
+                    return LoginResult(
+                        success=False,
+                        username=username,
+                        password=password,
+                        message="Invalid password",
+                        error_type="invalid_password",
+                    )
                 return LoginResult(
                     success=False,
                     username=username,
