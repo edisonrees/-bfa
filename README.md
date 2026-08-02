@@ -1,62 +1,56 @@
-# Local Auth BFa Tool for Railway
+# Instagram Mock BFa Tool
 
-A local authentication security testing tool with a web interface, designed for Railway deployment with replica support. Targets **localhost:8080** (or any configurable HTTP login endpoint) — not external services.
+Web UI for credential testing using **instaloader**, with all Instagram HTTP traffic routed through a mock demo API — never hitting real `instagram.com`.
 
-## Features
+## Mock proxy
 
-- **Web Interface**: Clean, responsive UI on port 8080
-- **Password File Upload**: Supports `.txt`, `.csv`, and `.json` formats
-- **Multiple Username Support**: Test against single or multiple usernames
-- **Local Target**: Built-in `/api/login` endpoint on `http://localhost:8080`
-- **Configurable Target**: Point at any local auth API via env vars
-- **Railway Optimized**: Works with Railway replicas and scaling
-- **Real-time Progress**: Live updates on task status and results
+All `www.instagram.com` and `i.instagram.com` requests are rewritten to:
 
-## Built-in Demo Login
-
-The app includes a local login endpoint for testing:
-
-- **URL**: `POST http://localhost:8080/api/login`
-- **Body**: `{"username": "admin", "password": "secret123"}`
-- Override via `DEMO_USERNAME` and `DEMO_PASSWORD` env vars
-
-## Quick Start
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-cp .env.example .env
-python app.py
+```
+https://instagram.mockapis.com/v1/api/mock/com.instgram.com/
 ```
 
-Open `http://localhost:8080` in your browser.
+Example:
 
-## Configuration
+| Original | Routed to |
+|----------|-----------|
+| `https://www.instagram.com/api/v1/web/accounts/login/ajax/` | `https://instagram.mockapis.com/v1/api/mock/com.instgram.com/api/v1/web/accounts/login/ajax/` |
+
+Configure via `MOCK_API_BASE_URL` in `.env`.
+
+## Quick start
+
+```bash
+py -3 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env
+py -3 app.py
+```
+
+Open `http://localhost:8080`.
+
+## Environment
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 8080 | Web interface port |
-| `TARGET_BASE_URL` | `http://localhost:8080` | Auth server base URL |
-| `TARGET_LOGIN_PATH` | `/api/login` | Login endpoint path |
-| `DEMO_USERNAME` | `admin` | Built-in demo username |
-| `DEMO_PASSWORD` | `secret123` | Built-in demo password |
-| `RATE_LIMIT` | 300 | Requests per minute to target |
-| `MAX_CONCURRENT_CHECKS` | 10 | Concurrent password checks |
+| `MOCK_API_BASE_URL` | `https://instagram.mockapis.com/v1/api/mock/com.instgram.com` | Mock Instagram API base |
+| `INSTAGRAM_RATE_LIMIT` | 60 | Requests per minute |
+| `INSTAGRAM_TIMEOUT` | 30 | Request timeout (seconds) |
+| `MAX_CONCURRENT_CHECKS` | 10 | Parallel password checks |
 
-## API Endpoints
+## Stack
 
-- `GET /` — Web interface
-- `GET /health` — Health check
-- `POST /api/login` — Built-in local login target
-- `GET /api/tasks` — List tasks
-- `POST /api/tasks` — Start a new auth test
-- `POST /api/preview` — Preview password file
+- Flask web UI
+- instaloader for Instagram-style login/profile flow
+- `mock_proxy.py` patches `requests.Session` to rewrite URLs
 
-## Security Notice
+## Tests
 
-Use only against systems you own or have explicit permission to test. Unauthorized access to computer systems may be illegal in your jurisdiction.
+```bash
+py -3 test_app.py
+```
 
-## License
+## Security
 
-Educational and authorized security testing purposes only.
+For authorized testing against mock/demo endpoints only. Do not point at production Instagram.

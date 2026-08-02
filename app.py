@@ -1,6 +1,6 @@
 """
-Local Auth BFa Web Application
-Main Flask application with web interface for local auth security testing
+Instagram Mock BFa Web Application
+Main Flask application — instaloader routed through mockapis demo proxy
 """
 
 import os
@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify, render_template_string, send_from_dir
 import logging
 from werkzeug.utils import secure_filename
 from config import config
-from auth_api import auth_handler, LoginResult
+from instagram_api import instagram_handler, LoginResult
 from file_processor import password_processor
 from models import BFaTask, BFaResult, task_manager
 import uuid
@@ -35,7 +35,7 @@ MAIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local Auth BFa Tool</title>
+    <title>Instagram Mock BFa Tool</title>
     <style>
         * {
             margin: 0;
@@ -330,8 +330,8 @@ MAIN_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔍 Local Auth BFa Tool</h1>
-            <p>Local auth security testing against {{ target_url }}</p>
+            <h1>🔍 Instagram Mock BFa Tool</h1>
+            <p>instaloader → {{ target_url }}</p>
         </div>
         
         <div class="card">
@@ -346,7 +346,7 @@ MAIN_TEMPLATE = """
                     <textarea id="usernames" name="usernames" placeholder="username1, username2, username3" required></textarea>
                 </div>
                 <button type="submit" class="btn">
-                    <span id="submitText">Start Local Auth Test</span>
+                    <span id="submitText">Start Mock BFa Test</span>
                     <span id="submitLoading" class="loading" style="display: none;"></span>
                 </button>
             </form>
@@ -557,7 +557,7 @@ def index():
     return render_template_string(
         MAIN_TEMPLATE,
         replica_id=config.REPLICA_ID,
-        target_url=config.TARGET_LOGIN_URL,
+        target_url=config.MOCK_API_BASE_URL,
     )
 
 @app.route('/health')
@@ -566,33 +566,10 @@ def health():
     return jsonify({
         'status': 'healthy',
         'replica_id': config.REPLICA_ID,
-        'target_url': config.TARGET_LOGIN_URL,
+        'target_url': config.MOCK_API_BASE_URL,
         'timestamp': datetime.now().isoformat()
     })
 
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    """Built-in local login endpoint for security testing (localhost:8080)."""
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-
-    if username != config.DEMO_USERNAME:
-        return jsonify({'success': False, 'message': 'Invalid username'}), 404
-
-    if password != config.DEMO_PASSWORD:
-        return jsonify({'success': False, 'message': 'Invalid password'}), 401
-
-    return jsonify({
-        'success': True,
-        'message': 'Login successful',
-        'user': {
-            'username': username,
-            'display_name': 'Demo User',
-            'role': 'admin',
-        }
-    }), 200
 
 @app.route('/api/preview', methods=['POST'])
 def preview_file():
@@ -780,7 +757,7 @@ def process_task_background(task_id: str, filepath: str):
                         break
                         
                     try:
-                        result = auth_handler.check_credentials(username, password)
+                        result = instagram_handler.check_credentials(username, password)
                         
                         # Update progress
                         task.progress += 1
@@ -850,10 +827,10 @@ if __name__ == '__main__':
     # Create upload folder
     os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
     
-    logger.info(f"Starting Local Auth BFa on {config.HOST}:{config.PORT}")
-    logger.info(f"Target login URL: {config.TARGET_LOGIN_URL}")
+    logger.info(f"Starting Instagram Mock BFa on {config.HOST}:{config.PORT}")
+    logger.info(f"Mock API base: {config.MOCK_API_BASE_URL}")
     logger.info(f"Replica ID: {config.REPLICA_ID}")
     logger.info(f"Max concurrent checks: {config.MAX_CONCURRENT_CHECKS}")
-    logger.info(f"Rate limit: {config.RATE_LIMIT}/min")
+    logger.info(f"Rate limit: {config.INSTAGRAM_RATE_LIMIT}/min")
     
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, threaded=True)

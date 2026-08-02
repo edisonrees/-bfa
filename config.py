@@ -10,20 +10,17 @@ class Config:
     HOST = os.getenv("HOST", "0.0.0.0")
     DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 
-    # Target Auth Server Configuration
-    TARGET_BASE_URL = os.getenv("TARGET_BASE_URL", "http://localhost:8080")
-    TARGET_LOGIN_PATH = os.getenv("TARGET_LOGIN_PATH", "/api/login")
-    TARGET_LOGIN_URL = f"{TARGET_BASE_URL.rstrip('/')}{TARGET_LOGIN_PATH}"
+    # Mock Instagram API proxy (all instaloader traffic routes here)
+    MOCK_API_BASE_URL = os.getenv(
+        "MOCK_API_BASE_URL",
+        "https://instagram.mockapis.com/v1/api/mock/com.instgram.com",
+    )
 
-    # Demo credentials for the built-in local login endpoint
-    DEMO_USERNAME = os.getenv("DEMO_USERNAME", "admin")
-    DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "secret123")
-
-    # Request Configuration
-    RATE_LIMIT = int(os.getenv("RATE_LIMIT", 300))
-    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 10))
+    # Instagram / instaloader Configuration
+    INSTAGRAM_RATE_LIMIT = int(os.getenv("INSTAGRAM_RATE_LIMIT", 60))
+    INSTAGRAM_TIMEOUT = int(os.getenv("INSTAGRAM_TIMEOUT", 30))
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
-    RETRY_DELAY = int(os.getenv("RETRY_DELAY", 1))
+    RETRY_DELAY = int(os.getenv("RETRY_DELAY", 5))
 
     # BFa Configuration
     MAX_CONCURRENT_CHECKS = int(os.getenv("MAX_CONCURRENT_CHECKS", 10))
