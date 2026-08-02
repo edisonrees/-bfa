@@ -17,8 +17,8 @@ from mock_proxy import install_mock_proxy
 
 install_mock_proxy()
 
-from instaloader import (  # noqa: E402
-    Instaloader,
+from instaloader import Instaloader  # noqa: E402
+from instaloader.exceptions import (  # noqa: E402
     BadCredentialsException,
     ConnectionException,
     InstaloaderException,
