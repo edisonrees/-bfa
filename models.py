@@ -305,32 +305,38 @@ class TaskManager:
         )
 
     def list_payloads(self) -> List[Dict[str, Any]]:
-        """Stable API payloads: live tasks win, then persisted snapshots."""
-        with self.lock:
-            live_map = {t.task_id: t.to_dict() for t in self.tasks.values()}
+        """SQLite is source of truth for UI; live memory overlays fresher fields."""
+        store_map: Dict[str, Dict[str, Any]] = {}
         try:
             from task_store import load_all_snapshots
 
             for snap in load_all_snapshots():
                 tid = snap.get("task_id")
-                if tid and tid not in live_map:
-                    live_map[tid] = snap
-                elif tid and tid in live_map:
-                    # Prefer whichever has higher progress / newer end
-                    live = live_map[tid]
-                    if (snap.get("progress") or 0) > (live.get("progress") or 0):
-                        # keep live hits if snap somehow older on hits
-                        if len(snap.get("successful_logins") or []) >= len(
-                            live.get("successful_logins") or []
-                        ):
-                            live_map[tid] = snap
+                if tid:
+                    store_map[tid] = snap
         except Exception:
             pass
+
+        with self.lock:
+            for task in self.tasks.values():
+                live = task.to_dict()
+                tid = task.task_id
+                prev = store_map.get(tid)
+                if not prev:
+                    store_map[tid] = live
+                    continue
+                # Prefer whichever is ahead on progress / hits
+                live_hits = len(live.get("successful_logins") or [])
+                prev_hits = len(prev.get("successful_logins") or [])
+                if (live.get("progress") or 0) >= (prev.get("progress") or 0) and live_hits >= prev_hits:
+                    store_map[tid] = live
+                elif live_hits > prev_hits:
+                    store_map[tid] = live
 
         def sort_key(item: Dict[str, Any]):
             return item.get("start_time") or item.get("end_time") or ""
 
-        return sorted(live_map.values(), key=sort_key, reverse=True)
+        return sorted(store_map.values(), key=sort_key, reverse=True)
 
     def stats(self) -> Dict[str, Any]:
         payloads = self.list_payloads()

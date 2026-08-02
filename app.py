@@ -349,9 +349,17 @@ def create_task():
 @app.route("/api/tasks/<task_id>", methods=["GET"])
 def get_task(task_id: str):
     task = task_manager.get_task(task_id)
-    if not task:
-        return jsonify({"success": False, "error": "Task not found"}), 404
-    return jsonify({"success": True, "task": task.to_dict()})
+    if task:
+        return jsonify({"success": True, "task": task.to_dict()})
+    try:
+        from task_store import load_snapshot
+
+        snap = load_snapshot(task_id)
+        if snap:
+            return jsonify({"success": True, "task": snap})
+    except Exception:
+        pass
+    return jsonify({"success": False, "error": "Task not found"}), 404
 
 
 @app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
@@ -406,6 +414,16 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
         task.status = "processing"
         task.start_time = datetime.now()
         task.note_progress()
+        task.results.append(
+            {
+                "username": task.usernames[0] if task.usernames else "",
+                "password": "***",
+                "success": False,
+                "message": f"Starting against {config.MOCK_API_BASE_URL}",
+                "error_type": "info",
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
         task_manager.update_task(task)
 
         logger.info(
@@ -474,22 +492,31 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
                             }
                         )
                         logger.info("HIT %s (mock)", username)
-                        task_manager.update_task(task)
                         if task.stop_on_first:
                             stop_all = True
-                            break
                     else:
                         task.failed_attempts += 1
 
                     updates += 1
-                    # Persist often so UI polls never see empty/stale flashes
-                    if result.success or updates == 1 or updates % 2 == 0:
-                        task_manager.update_task(task)
+                    # Always persist so any poll (any container with shared volume) sees state
+                    task_manager.update_task(task)
+                    if stop_all:
+                        break
                 except Exception as exc:
                     logger.error("Check failed %s: %s", username, exc)
                     task.failed_attempts += 1
                     task.progress += 1
                     task.note_progress()
+                    task.results.append(
+                        {
+                            "username": username,
+                            "password": "***",
+                            "success": False,
+                            "message": f"Unexpected error: {exc}",
+                            "error_type": "unknown_error",
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                    )
                     updates += 1
                     task_manager.update_task(task)
 

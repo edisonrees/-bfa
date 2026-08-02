@@ -5,13 +5,11 @@
     "PORT": 8080,
     "WORKERS": 1,
     "THREADS": 16,
-    "TIMEOUT": 300,
-    "MAX_REQUESTS": 1000,
-    "MAX_REQUESTS_JITTER": 50
+    "TIMEOUT": 300
   },
   "replicas": {
     "min": 1,
-    "max": 10,
+    "max": 1,
     "concurrency": 50
   },
   "healthcheck": {

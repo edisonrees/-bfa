@@ -256,29 +256,85 @@
       const res = await fetch("/api/tasks", { cache: "no-store" });
       const data = await res.json();
       if (!data.success) return;
-      // Merge: never drop a task that still exists locally with higher progress
-      const incoming = data.tasks || [];
-      const byId = new Map(state.tasks.map((t) => [t.task_id, t]));
-      const merged = incoming.map((t) => {
-        const prev = byId.get(t.task_id);
-        if (!prev) return t;
+
+      let incoming = data.tasks || [];
+
+      // Deep-refresh active tasks so progress/results don't stall on list endpoint races
+      const activeIds = [
+        ...new Set([
+          ...incoming.filter((t) => t.status === "processing" || t.status === "pending").map((t) => t.task_id),
+          ...state.tasks.filter((t) => t.status === "processing" || t.status === "pending").map((t) => t.task_id),
+        ]),
+      ].slice(0, 8);
+
+      if (activeIds.length) {
+        const details = await Promise.all(
+          activeIds.map(async (id) => {
+            try {
+              const r = await fetch(`/api/tasks/${id}`, { cache: "no-store" });
+              const j = await r.json();
+              return j.success ? j.task : null;
+            } catch {
+              return null;
+            }
+          })
+        );
+        const byId = new Map(incoming.map((t) => [t.task_id, t]));
+        for (const detail of details) {
+          if (!detail) continue;
+          const prev = byId.get(detail.task_id);
+          if (!prev || (detail.progress || 0) >= (prev.progress || 0)) {
+            byId.set(detail.task_id, detail);
+          }
+        }
+        // Keep local active tasks if server list blipped empty for them
+        for (const local of state.tasks) {
+          if (
+            (local.status === "processing" || local.status === "pending") &&
+            !byId.has(local.task_id)
+          ) {
+            byId.set(local.task_id, local);
+          }
+        }
+        incoming = [...byId.values()];
+      }
+
+      const mergedMap = new Map();
+      for (const t of [...state.tasks, ...incoming]) {
+        const prev = mergedMap.get(t.task_id);
+        if (!prev) {
+          mergedMap.set(t.task_id, t);
+          continue;
+        }
         const prevHits = (prev.successful_logins || []).length;
         const nextHits = (t.successful_logins || []).length;
-        if ((prev.progress || 0) > (t.progress || 0) && prevHits >= nextHits) {
-          return prev;
+        const prevProg = prev.progress || 0;
+        const nextProg = t.progress || 0;
+        if (nextProg > prevProg || (nextProg === prevProg && nextHits >= prevHits)) {
+          // Prefer richer recent_results
+          const richer =
+            (t.recent_results || t.results || []).length >=
+            (prev.recent_results || prev.results || []).length
+              ? t
+              : { ...t, recent_results: prev.recent_results || prev.results, results: prev.results };
+          if (nextHits < prevHits) {
+            richer.successful_logins = prev.successful_logins;
+            richer.hit_count = prevHits;
+          }
+          mergedMap.set(t.task_id, richer);
+        } else if (nextHits > prevHits) {
+          mergedMap.set(t.task_id, t);
         }
-        if (nextHits < prevHits) {
-          return { ...t, successful_logins: prev.successful_logins, hit_count: prevHits };
-        }
-        return t;
-      });
-      // Keep local-only active tasks briefly if server blipped empty
+      }
+
+      const merged = [...mergedMap.values()];
       if (merged.length === 0 && state.tasks.some((t) => t.status === "processing")) {
         renderStats(state.stats);
         return;
       }
-      state.tasks = merged;
-      state.stats = data.stats || {};
+
+      state.tasks = merged.sort((a, b) => String(b.start_time || "").localeCompare(String(a.start_time || "")));
+      state.stats = data.stats || state.stats;
       renderStats(state.stats);
       renderTasks(force);
     } catch {
