@@ -79,7 +79,7 @@
     }
     els.fileMeta.hidden = false;
     els.fileName.textContent = data.filename || file.name;
-    els.fileCount.textContent = `${data.password_count} passwords`;
+    els.fileCount.textContent = `${Number(data.password_count || 0).toLocaleString()} passwords${data.stream ? " (stream)" : ""}${data.capped ? " — CAP HIT" : ""}`;
     els.filePreview.innerHTML = (data.preview || [])
       .map((p) => `<span class="mini-chip">${escapeHtml(p)}</span>`)
       .join("");
@@ -117,12 +117,19 @@
       .replaceAll('"', "&quot;");
   }
 
-  function formatEta(seconds) {
+  function formatEta(seconds, human) {
+    if (human) return human;
     if (seconds == null) return "—";
-    if (seconds < 60) return `${Math.ceil(seconds)}s`;
-    const m = Math.floor(seconds / 60);
-    const s = Math.ceil(seconds % 60);
-    return `${m}m ${s}s`;
+    seconds = Math.max(0, Math.round(Number(seconds)));
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+
+  function formatCount(n) {
+    return Number(n || 0).toLocaleString();
   }
 
   function filteredTasks() {
@@ -176,15 +183,16 @@
         <div class="task-top">
           <div>
             <div class="task-title">${escapeHtml(title || "Untitled")}</div>
-            <div class="task-id">${escapeHtml(task.task_id.slice(0, 8))} · ${escapeHtml(task.source || "upload")} · ${task.password_count || 0} pw</div>
+            <div class="task-id">${escapeHtml(task.task_id.slice(0, 8))} · ${escapeHtml(task.source || "upload")} · ${formatCount(task.password_count)} pw · shard ${escapeHtml(task.shard_label || "1/1")}${task.stream ? " · stream" : ""}</div>
           </div>
           <span class="status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
         </div>
         <div class="progress"><i style="width:${pct}%"></i></div>
         <div class="task-meta">
-          <span>${task.progress || 0}/${task.total || 0} (${pct}%)</span>
+          <span>${formatCount(task.progress)}/${formatCount(task.total)} (${pct}%)</span>
           <span>${task.attempts_per_second || 0}/s</span>
-          <span>ETA ${formatEta(task.eta_seconds)}</span>
+          <span>ETA ${formatEta(task.eta_seconds, task.eta_human)}</span>
+          ${task.total_replicas > 1 ? `<span>cluster ~${formatEta(task.cluster_eta_seconds)}</span>` : ""}
           ${task.error ? `<span style="color:var(--rose)">${escapeHtml(task.error)}</span>` : ""}
         </div>
         ${hits ? `<div class="hits">${hits}</div>` : ""}

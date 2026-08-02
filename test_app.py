@@ -55,6 +55,71 @@ class TestMocka(unittest.TestCase):
         self.assertEqual(res.json["status"], "healthy")
         self.assertIn("target_url", res.json)
         self.assertIn("stats", res.json)
+        self.assertEqual(res.json["max_passwords"], config.MAX_PASSWORDS)
+        self.assertIn("total_replicas", res.json)
+
+    def test_csv_style_txt_oneline(self):
+        result = password_processor.process_password_text("alpha,beta,gamma,delta")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["password_count"], 4)
+        self.assertEqual(result["passwords"], ["alpha", "beta", "gamma", "delta"])
+
+    def test_csv_style_txt_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as handle:
+            handle.write("one,two,three\nfour,five\n")
+            path = handle.name
+        try:
+            result = password_processor.process_password_file(path)
+            self.assertTrue(result["success"])
+            self.assertEqual(result["password_count"], 5)
+            self.assertIn("two", result["passwords"])
+        finally:
+            os.unlink(path)
+
+    def test_csv_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as handle:
+            handle.write("password\nsecret\nletmein\n")
+            path = handle.name
+        try:
+            result = password_processor.process_password_file(path)
+            self.assertTrue(result["success"])
+            self.assertEqual(result["password_count"], 2)
+        finally:
+            os.unlink(path)
+
+    def test_replica_shard_size(self):
+        from replicas import ReplicaInfo
+
+        info = ReplicaInfo(replica_id=0, total_replicas=4)
+        self.assertEqual(info.shard_size(100), 25)
+        self.assertTrue(info.owns_index(0))
+        self.assertFalse(info.owns_index(1))
+        info2 = ReplicaInfo(replica_id=1, total_replicas=4)
+        self.assertEqual(info2.shard_size(100), 25)
+        self.assertTrue(info2.owns_index(1))
+
+    def test_eta_fields(self):
+        task = task_manager.create_task(
+            usernames=["a"],
+            passwords=["1", "2", "3", "4"],
+            replica_index=0,
+            total_replicas=2,
+            password_count=4,
+        )
+        task.status = "processing"
+        task.start_time = task.start_time or __import__("datetime").datetime.now()
+        from datetime import datetime, timedelta
+
+        task.start_time = datetime.now() - timedelta(seconds=10)
+        task.progress = 2
+        task.note_progress()
+        data = task.to_dict()
+        self.assertIn("eta_seconds", data)
+        self.assertIn("eta_human", data)
+        self.assertEqual(data["shard_label"], "1/2")
+
+    def test_max_passwords_config(self):
+        self.assertEqual(config.MAX_PASSWORDS, 100_000_000)
 
     def test_index(self):
         res = self.client.get("/")

@@ -1,6 +1,7 @@
 """
 MOCKA — Mock Instagram auth lab
 Flask app with instaloader traffic routed through mockapis.
+Supports streaming wordlists up to 100M, replica sharding, CSV-style TXT.
 """
 
 from __future__ import annotations
@@ -12,13 +13,15 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable, Iterator, Optional
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from config import config
 from file_processor import password_processor
 from instagram_api import instagram_handler
-from models import BFaTask, task_manager
+from models import task_manager
+from replicas import replica_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +48,6 @@ def parse_usernames(raw: str) -> list[str]:
         name = chunk.strip().lstrip("@")
         if name:
             parts.append(name)
-    # preserve order, drop dupes
     seen = set()
     unique = []
     for name in parts:
@@ -59,7 +61,6 @@ def parse_usernames(raw: str) -> list[str]:
 def collect_passwords_from_request():
     """Accept file upload, paste body, or sample wordlist."""
     source = (request.form.get("source") or "upload").strip().lower()
-    filepath = None
 
     if source == "sample":
         sample = password_processor.sample_passwords_path()
@@ -68,7 +69,9 @@ def collect_passwords_from_request():
         result = password_processor.process_password_file(str(sample))
         return result, None, None
 
-    if source == "paste" or (request.form.get("passwords") and "passwordFile" not in request.files):
+    if source == "paste" or (
+        request.form.get("passwords") and "passwordFile" not in request.files
+    ):
         text = (request.form.get("passwords") or "").strip()
         if not text:
             return None, {"success": False, "error": "Paste at least one password"}, 400
@@ -84,15 +87,31 @@ def collect_passwords_from_request():
 
     filepath = password_processor.save_uploaded_file(file_storage)
     if not filepath:
-        return None, {"success": False, "error": "Invalid file type. Use .txt, .csv, or .json"}, 400
+        return None, {
+            "success": False,
+            "error": "Invalid file type. Use .txt, .csv, or .json (comma-separated TXT supported)",
+        }, 400
 
     result = password_processor.process_password_file(filepath)
     if not result["success"]:
         password_processor.cleanup_file(filepath)
-        return None, {"success": False, "error": result["error"]}, 500
+        return None, {"success": False, "error": result["error"]}, 400 if result.get("capped") else 500
 
     result["_filepath"] = filepath
     return result, None, None
+
+
+def password_source_for_task(task) -> Iterator[str]:
+    """Yield passwords for a task (memory list or streamed file)."""
+    if task.passwords:
+        yield from task.passwords
+        return
+    path = task.wordlist_path
+    if path and os.path.exists(path):
+        yield from password_processor.iter_password_file(path)
+        return
+    return
+    yield  # pragma: no cover
 
 
 @app.route("/")
@@ -101,10 +120,13 @@ def index():
         "index.html",
         app_name=config.APP_NAME,
         tagline=config.APP_TAGLINE,
-        replica_id=config.REPLICA_ID,
+        replica_id=replica_info.replica_id,
+        total_replicas=replica_info.total_replicas,
+        replica_label=replica_info.label,
         mock_url=config.MOCK_API_BASE_URL,
         rate_limit=config.INSTAGRAM_RATE_LIMIT,
         max_concurrent=config.MAX_CONCURRENT_CHECKS,
+        max_passwords=config.MAX_PASSWORDS,
     )
 
 
@@ -114,8 +136,11 @@ def health():
         {
             "status": "healthy",
             "app": config.APP_NAME,
-            "replica_id": config.REPLICA_ID,
+            "replica_id": replica_info.replica_id,
+            "total_replicas": replica_info.total_replicas,
+            "replica_label": replica_info.label,
             "target_url": config.MOCK_API_BASE_URL,
+            "max_passwords": config.MAX_PASSWORDS,
             "stats": task_manager.stats(),
             "timestamp": datetime.now().isoformat(),
         }
@@ -130,10 +155,13 @@ def meta():
             "app": config.APP_NAME,
             "tagline": config.APP_TAGLINE,
             "mock_url": config.MOCK_API_BASE_URL,
-            "replica_id": config.REPLICA_ID,
+            "replica_id": replica_info.replica_id,
+            "total_replicas": replica_info.total_replicas,
+            "replica_label": replica_info.label,
             "rate_limit": config.INSTAGRAM_RATE_LIMIT,
             "max_concurrent": config.MAX_CONCURRENT_CHECKS,
             "max_passwords": config.MAX_PASSWORDS,
+            "stream_threshold": config.STREAM_THRESHOLD,
             "stats": task_manager.stats(),
         }
     )
@@ -150,6 +178,9 @@ def preview_file():
                     "password_count": result["password_count"],
                     "filename": result["filename"],
                     "preview": result["passwords"][:8],
+                    "capped": result.get("capped", False),
+                    "max_passwords": config.MAX_PASSWORDS,
+                    "error": result.get("error"),
                 }
             )
 
@@ -166,13 +197,16 @@ def preview_file():
         )
         file_storage.save(temp_path)
         try:
-            result = password_processor.process_password_file(temp_path)
+            result = password_processor.preview_file(temp_path)
             return jsonify(
                 {
                     "success": result["success"],
                     "password_count": result["password_count"],
                     "filename": result["filename"],
-                    "preview": result["passwords"][:8],
+                    "preview": result["preview"],
+                    "capped": result.get("capped", False),
+                    "stream": result.get("stream", False),
+                    "max_passwords": config.MAX_PASSWORDS,
                     "error": result.get("error"),
                 }
             )
@@ -205,6 +239,11 @@ def get_tasks():
                 "tasks": [t.to_dict() for t in tasks],
                 "count": len(tasks),
                 "stats": task_manager.stats(),
+                "replica": {
+                    "id": replica_info.replica_id,
+                    "total": replica_info.total_replicas,
+                    "label": replica_info.label,
+                },
             }
         )
     except Exception as exc:
@@ -234,30 +273,60 @@ def create_task():
         if err:
             return jsonify(err), code
 
-        passwords = result["passwords"]
-        if not passwords:
-            filepath = result.get("_filepath")
+        password_count = int(result.get("password_count") or 0)
+        passwords = result.get("passwords") or []
+        stream = bool(result.get("stream"))
+        filepath = result.get("_filepath") or result.get("filepath")
+
+        if password_count <= 0 and not passwords:
             if filepath:
                 password_processor.cleanup_file(filepath)
             return jsonify({"success": False, "error": "No passwords found"}), 400
 
-        source = (request.form.get("source") or result.get("filename") or "upload").lower()
+        if password_count > config.MAX_PASSWORDS:
+            if filepath:
+                password_processor.cleanup_file(filepath)
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"Password cap exceeded (max {config.MAX_PASSWORDS:,})",
+                }
+            ), 400
+
+        source = (request.form.get("source") or "upload").lower()
         if source not in ("upload", "paste", "sample"):
             source = "paste" if result.get("filename") == "pasted.txt" else "upload"
+
+        shard_total = replica_info.shard_size(password_count)
 
         task = task_manager.create_task(
             usernames=usernames,
             password_file=result.get("filename") or "passwords.txt",
-            passwords=passwords,
+            passwords=[] if stream else passwords,
             stop_on_first=stop_on_first,
             source=source,
-            replica_id=config.REPLICA_ID,
+            replica_id=str(replica_info.replica_id),
+            replica_index=replica_info.replica_id,
+            total_replicas=replica_info.total_replicas,
+            wordlist_path=filepath if stream else (filepath if not passwords else None),
+            stream=stream or bool(filepath and not passwords),
+            password_count=password_count,
+            shard_total=shard_total,
         )
 
-        filepath = result.get("_filepath")
+        # Keep path for streaming OR for cleanup after in-memory load from upload
+        if filepath and not task.wordlist_path and stream:
+            task.wordlist_path = filepath
+        if filepath and task.stream:
+            task.wordlist_path = filepath
+        # For in-memory uploads, still keep path for cleanup after run
+        cleanup_path = filepath
+
+        task_manager.update_task(task)
+
         threading.Thread(
             target=process_task_background,
-            args=(task.task_id, filepath),
+            args=(task.task_id, cleanup_path),
             daemon=True,
         ).start()
 
@@ -265,7 +334,10 @@ def create_task():
             {
                 "success": True,
                 "task_id": task.task_id,
-                "message": f"Started — {len(passwords)} passwords × {len(usernames)} usernames",
+                "message": (
+                    f"Started — {password_count:,} passwords × {len(usernames)} usernames "
+                    f"(shard {replica_info.label}: {shard_total:,} pw)"
+                ),
                 "task": task.to_dict(),
             }
         )
@@ -297,9 +369,10 @@ def delete_task(task_id: str):
         return jsonify({"success": False, "error": "Task not found"}), 404
     if task.status in ("pending", "processing"):
         task.cancel_requested = True
-        # give worker a beat, then delete
         time.sleep(0.05)
-    if task.password_file and task.source == "upload":
+    if task.wordlist_path:
+        password_processor.cleanup_file(task.wordlist_path)
+    elif task.password_file and task.source == "upload":
         file_path = os.path.join(config.UPLOAD_FOLDER, task.password_file)
         password_processor.cleanup_file(file_path)
     task_manager.delete_task(task_id)
@@ -318,11 +391,11 @@ def export_task(task_id: str):
     if not task:
         return jsonify({"success": False, "error": "Task not found"}), 404
     payload = task.to_dict()
-    payload["results"] = task.results  # full results for export
+    payload["results"] = task.results
     return jsonify({"success": True, "export": payload})
 
 
-def process_task_background(task_id: str, filepath: str | None) -> None:
+def process_task_background(task_id: str, filepath: Optional[str]) -> None:
     try:
         time.sleep(0.05)
         task = task_manager.get_task(task_id)
@@ -332,85 +405,105 @@ def process_task_background(task_id: str, filepath: str | None) -> None:
 
         task.status = "processing"
         task.start_time = datetime.now()
+        task.note_progress()
         task_manager.update_task(task)
+
         logger.info(
-            "Task %s: %s users × %s passwords via %s",
+            "Task %s: %s users × %s passwords | shard %s/%s | stream=%s | via %s",
             task_id,
             len(task.usernames),
-            len(task.passwords),
+            task.global_total // max(1, len(task.usernames)),
+            task.replica_index + 1,
+            task.total_replicas,
+            task.stream,
             config.MOCK_API_BASE_URL,
         )
 
         stop_all = False
+        updates = 0
+
         for username in task.usernames:
             if stop_all or task.cancel_requested:
                 break
 
-            for password_batch in password_processor.get_password_generator(
-                task.passwords, config.BATCH_SIZE
-            ):
-                if stop_all or task.cancel_requested:
+            source: Iterable[str]
+            if task.passwords:
+                source = task.passwords
+            elif task.wordlist_path and os.path.exists(task.wordlist_path):
+                source = password_processor.iter_password_file(task.wordlist_path)
+            elif filepath and os.path.exists(filepath):
+                source = password_processor.iter_password_file(filepath)
+            else:
+                task.error = "Wordlist missing for streamed task"
+                break
+
+            for index, password in enumerate(source):
+                if task.total_replicas > 1 and index % task.total_replicas != task.replica_index:
+                    continue
+
+                live = task_manager.get_task(task_id)
+                if not live or live.cancel_requested:
+                    task.cancel_requested = True
+                    stop_all = True
                     break
 
-                for password in password_batch:
-                    # refresh cancel flag
-                    live = task_manager.get_task(task_id)
-                    if not live or live.cancel_requested:
-                        task.cancel_requested = True
-                        stop_all = True
-                        break
+                try:
+                    result = instagram_handler.check_credentials(username, password)
+                    task.progress += 1
+                    task.note_progress()
 
-                    try:
-                        result = instagram_handler.check_credentials(username, password)
-                        task.progress += 1
+                    entry = {
+                        "username": username,
+                        "password": password if result.success else "***",
+                        "success": result.success,
+                        "message": result.message,
+                        "error_type": result.error_type,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    task.results.append(entry)
+                    if len(task.results) > 5000:
+                        task.results = task.results[-2000:]
 
-                        entry = {
-                            "username": username,
-                            "password": password if result.success else "***",
-                            "success": result.success,
-                            "message": result.message,
-                            "error_type": result.error_type,
-                            "timestamp": datetime.now().isoformat(),
-                        }
-                        task.results.append(entry)
-
-                        if result.success:
-                            task.successful_logins.append(
-                                {
-                                    "username": username,
-                                    "password": password,
-                                    "profile": result.profile,
-                                    "timestamp": datetime.now().isoformat(),
-                                }
-                            )
-                            logger.info("HIT %s (mock)", username)
-                            if task.stop_on_first:
-                                stop_all = True
-                                break
-                        else:
-                            task.failed_attempts += 1
-
-                        task_manager.update_task(task)
-                    except Exception as exc:
-                        logger.error("Check failed %s: %s", username, exc)
+                    if result.success:
+                        task.successful_logins.append(
+                            {
+                                "username": username,
+                                "password": password,
+                                "profile": result.profile,
+                                "timestamp": datetime.now().isoformat(),
+                            }
+                        )
+                        logger.info("HIT %s (mock)", username)
+                        if task.stop_on_first:
+                            stop_all = True
+                            break
+                    else:
                         task.failed_attempts += 1
-                        task.progress += 1
-                        task_manager.update_task(task)
 
-                time.sleep(0.05)
+                    updates += 1
+                    if updates % 5 == 0:
+                        task_manager.update_task(task)
+                except Exception as exc:
+                    logger.error("Check failed %s: %s", username, exc)
+                    task.failed_attempts += 1
+                    task.progress += 1
+                    task.note_progress()
+                    updates += 1
+
+            if stop_all or task.cancel_requested:
+                break
+
+        task_manager.update_task(task)
 
         if task.cancel_requested:
             task.status = "cancelled"
+        elif task.error:
+            task.status = "failed"
         else:
             task.status = "completed"
         task.end_time = datetime.now()
         task_manager.update_task(task)
-        logger.info(
-            "Task %s %s — %s hits",
-            task_id,
-            task.status,
-            len(task.successful_logins),
-        )
+        logger.info("Task %s %s — %s hits", task_id, task.status, len(task.successful_logins))
 
         if filepath:
             password_processor.cleanup_file(filepath)
@@ -427,4 +520,5 @@ def process_task_background(task_id: str, filepath: str | None) -> None:
 if __name__ == "__main__":
     logger.info("Starting %s on %s:%s", config.APP_NAME, config.HOST, config.PORT)
     logger.info("Mock target: %s", config.MOCK_API_BASE_URL)
+    logger.info("Replica %s | max passwords %s", replica_info.label, f"{config.MAX_PASSWORDS:,}")
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, threaded=True)

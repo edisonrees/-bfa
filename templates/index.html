@@ -22,9 +22,10 @@
         <div class="brand-sub">{{ tagline }}</div>
       </div>
     </div>
-    <div class="topbar-meta">
+        <div class="topbar-meta">
       <span class="pill pill-mock" title="{{ mock_url }}">MOCK TARGET</span>
-      <span class="pill" id="replicaPill">R{{ replica_id }}</span>
+      <span class="pill" id="replicaPill" title="Replica shard {{ replica_label }}">shard {{ replica_label }}</span>
+      <span class="pill" title="Hard cap">cap {{ '{:,}'.format(max_passwords) }}</span>
       <span class="pill pill-live" id="healthPill">checking…</span>
     </div>
   </header>
@@ -54,7 +55,7 @@
           <label class="dropzone" id="dropzone" for="passwordFile">
             <input type="file" id="passwordFile" name="passwordFile" accept=".txt,.csv,.json" />
             <span class="drop-title">Drop wordlist here</span>
-            <span class="drop-sub">.txt · .csv · .json — or click to browse</span>
+            <span class="drop-sub">.txt · .csv · .json — comma-separated TXT supported · up to {{ '{:,}'.format(max_passwords) }}</span>
           </label>
           <div class="file-meta" id="fileMeta" hidden>
             <strong id="fileName">—</strong>
@@ -66,8 +67,8 @@
         <div id="panel-paste" class="source-panel" hidden>
           <label class="field">
             <span class="field-label">Passwords</span>
-            <textarea id="passwords" name="passwords" rows="8" placeholder="password1&#10;password2&#10;user:passA,passB"></textarea>
-            <span class="field-hint" id="pasteHint">0 passwords parsed</span>
+            <textarea id="passwords" name="passwords" rows="8" placeholder="password1,password2,password3&#10;or one per line&#10;user:passA,passB"></textarea>
+            <span class="field-hint" id="pasteHint">0 passwords parsed · CSV / comma-separated OK</span>
           </label>
         </div>
 
@@ -100,6 +101,8 @@
         <div class="route-grid">
           <div><span>Rate</span><strong>{{ rate_limit }}/min</strong></div>
           <div><span>Concurrency</span><strong>{{ max_concurrent }}</strong></div>
+          <div><span>Replicas</span><strong>{{ replica_label }}</strong></div>
+          <div><span>Max passwords</span><strong>{{ '{:,}'.format(max_passwords) }}</strong></div>
         </div>
       </aside>
     </section>
@@ -156,6 +159,9 @@
     window.MOCKA = {
       mockUrl: {{ mock_url|tojson }},
       replicaId: {{ replica_id|tojson }},
+      totalReplicas: {{ total_replicas|tojson }},
+      replicaLabel: {{ replica_label|tojson }},
+      maxPasswords: {{ max_passwords|tojson }},
       pollMs: 1500
     };
   </script>
