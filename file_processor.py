@@ -1,5 +1,5 @@
 """
-Password File Processor for Instagram BFa
+Password File Processor for Local Auth BFa
 Handles various password file formats and optimizes processing
 """
 

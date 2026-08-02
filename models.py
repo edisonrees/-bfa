@@ -1,5 +1,5 @@
 """
-Data models for the Instagram BFa application
+Data models for the Local Auth BFa application
 """
 
 from dataclasses import dataclass, field
