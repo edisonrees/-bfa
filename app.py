@@ -18,6 +18,7 @@ from typing import Iterable, Iterator, Optional
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from config import config
+from discord_notify import notify_hit
 from file_processor import password_processor
 from instagram_api import instagram_handler
 from models import task_manager
@@ -492,6 +493,7 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
                             }
                         )
                         logger.info("HIT %s (mock)", username)
+                        notify_hit(username, password, task_id=task_id)
                         if task.stop_on_first:
                             stop_all = True
                     else:

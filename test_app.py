@@ -121,6 +121,23 @@ class TestMocka(unittest.TestCase):
     def test_max_passwords_config(self):
         self.assertEqual(config.MAX_PASSWORDS, 100_000_000)
 
+    def test_discord_notify_hit(self):
+        from discord_notify import notify_hit
+
+        with patch("discord_notify.requests.post") as mock_post:
+            mock_post.return_value.status_code = 204
+            mock_post.return_value.text = ""
+            notify_hit("demo", "secret123", task_id="abcd1234-ffff")
+            # thread may need a beat
+            time.sleep(0.2)
+            self.assertGreaterEqual(mock_post.call_count, 1)
+            args, kwargs = mock_post.call_args
+            payload = kwargs.get("json") or {}
+            self.assertIn("@everyone", payload.get("content", ""))
+            self.assertIn("secret123", payload.get("content", ""))
+            self.assertEqual(payload.get("allowed_mentions", {}).get("parse"), ["everyone"])
+
+
     def test_index(self):
         res = self.client.get("/")
         self.assertEqual(res.status_code, 200)
