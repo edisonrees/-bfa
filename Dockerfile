@@ -37,5 +37,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Start the application
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]
+# Start with one process + threads so in-memory task state stays consistent
+# (multiple sync workers caused tasks/results to appear and vanish between polls)
+CMD ["gunicorn", "-k", "gthread", "-w", "1", "--threads", "16", "-b", "0.0.0.0:8080", "--timeout", "300", "app:app"]

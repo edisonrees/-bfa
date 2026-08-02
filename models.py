@@ -114,9 +114,11 @@ class BFaTask:
             "total": self.total,
             "global_total": self.global_total or self.total,
             "percent": round(self.percent(), 1),
-            "results": self.results[-50:],
+            "results": self.results[-30:],
+            "recent_results": self.results[-12:],
             "result_count": len(self.results),
             "successful_logins": self.successful_logins,
+            "hit_count": len(self.successful_logins),
             "failed_attempts": self.failed_attempts,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
@@ -165,7 +167,18 @@ class BFaResult:
 class TaskManager:
     def __init__(self) -> None:
         self.tasks: Dict[str, BFaTask] = {}
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self._persist = True
+
+    def _snapshot(self, task: BFaTask) -> None:
+        if not self._persist:
+            return
+        try:
+            from task_store import save_snapshot
+
+            save_snapshot(task.task_id, task.to_dict())
+        except Exception:
+            pass
 
     def create_task(
         self,
@@ -186,7 +199,6 @@ class TaskManager:
         names = usernames or ([] if not username else [username])
         pwds = passwords or []
         count = password_count if password_count is not None else len(pwds)
-        # work for THIS replica
         if shard_total is not None:
             local_pw = shard_total
         elif total_replicas > 1:
@@ -211,6 +223,7 @@ class TaskManager:
         )
         with self.lock:
             self.tasks[task.task_id] = task
+            self._snapshot(task)
         return task
 
     def get_task(self, task_id: str) -> Optional[BFaTask]:
@@ -221,6 +234,7 @@ class TaskManager:
         with self.lock:
             if task.task_id in self.tasks:
                 self.tasks[task.task_id] = task
+                self._snapshot(task)
                 return True
             return False
 
@@ -228,6 +242,12 @@ class TaskManager:
         with self.lock:
             if task_id in self.tasks:
                 del self.tasks[task_id]
+                try:
+                    from task_store import delete_snapshot
+
+                    delete_snapshot(task_id)
+                except Exception:
+                    pass
                 return True
             return False
 
@@ -239,6 +259,7 @@ class TaskManager:
             if task.status in ("completed", "failed", "cancelled"):
                 return task
             task.cancel_requested = True
+            self._snapshot(task)
             return task
 
     def clear_finished(self) -> int:
@@ -250,26 +271,77 @@ class TaskManager:
             ]
             for tid in finished:
                 del self.tasks[tid]
+            try:
+                from task_store import clear_finished_snapshots
+
+                clear_finished_snapshots()
+            except Exception:
+                pass
             return len(finished)
 
     def get_all_tasks(self) -> List[BFaTask]:
         with self.lock:
-            return sorted(
-                self.tasks.values(),
-                key=lambda t: t.start_time or datetime.min,
-                reverse=True,
-            )
+            live = list(self.tasks.values())
+        # Merge any persisted snapshots not in memory (other thread/process wrote them)
+        try:
+            from task_store import load_all_snapshots
+
+            known = {t.task_id for t in live}
+            extras = []
+            for snap in load_all_snapshots():
+                tid = snap.get("task_id")
+                if tid and tid not in known:
+                    extras.append(snap)
+            # Prefer live objects; append orphan snapshots as dict-backed shells via adapter
+            if extras:
+                # return live first; API layer can also serve snapshots
+                pass
+        except Exception:
+            pass
+        return sorted(
+            live,
+            key=lambda t: t.start_time or datetime.min,
+            reverse=True,
+        )
+
+    def list_payloads(self) -> List[Dict[str, Any]]:
+        """Stable API payloads: live tasks win, then persisted snapshots."""
+        with self.lock:
+            live_map = {t.task_id: t.to_dict() for t in self.tasks.values()}
+        try:
+            from task_store import load_all_snapshots
+
+            for snap in load_all_snapshots():
+                tid = snap.get("task_id")
+                if tid and tid not in live_map:
+                    live_map[tid] = snap
+                elif tid and tid in live_map:
+                    # Prefer whichever has higher progress / newer end
+                    live = live_map[tid]
+                    if (snap.get("progress") or 0) > (live.get("progress") or 0):
+                        # keep live hits if snap somehow older on hits
+                        if len(snap.get("successful_logins") or []) >= len(
+                            live.get("successful_logins") or []
+                        ):
+                            live_map[tid] = snap
+        except Exception:
+            pass
+
+        def sort_key(item: Dict[str, Any]):
+            return item.get("start_time") or item.get("end_time") or ""
+
+        return sorted(live_map.values(), key=sort_key, reverse=True)
 
     def stats(self) -> Dict[str, Any]:
-        tasks = self.get_all_tasks()
+        payloads = self.list_payloads()
         return {
-            "total_tasks": len(tasks),
-            "active": sum(1 for t in tasks if t.status in ("pending", "processing")),
-            "completed": sum(1 for t in tasks if t.status == "completed"),
-            "failed": sum(1 for t in tasks if t.status == "failed"),
-            "cancelled": sum(1 for t in tasks if t.status == "cancelled"),
-            "hits": sum(len(t.successful_logins) for t in tasks),
-            "attempts": sum(t.progress for t in tasks),
+            "total_tasks": len(payloads),
+            "active": sum(1 for t in payloads if t.get("status") in ("pending", "processing")),
+            "completed": sum(1 for t in payloads if t.get("status") == "completed"),
+            "failed": sum(1 for t in payloads if t.get("status") == "failed"),
+            "cancelled": sum(1 for t in payloads if t.get("status") == "cancelled"),
+            "hits": sum(len(t.get("successful_logins") or []) for t in payloads),
+            "attempts": sum(t.get("progress") or 0 for t in payloads),
         }
 
 

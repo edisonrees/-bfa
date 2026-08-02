@@ -8,6 +8,9 @@
     stats: {},
     filter: "all",
     pollTimer: null,
+    pollInFlight: false,
+    lastFingerprint: "",
+    knownIds: new Set(),
   };
 
   const els = {
@@ -106,7 +109,7 @@
         count += 1;
       }
     }
-    els.pasteHint.textContent = `${count} password${count === 1 ? "" : "s"} parsed`;
+    els.pasteHint.textContent = `${count} password${count === 1 ? "" : "s"} parsed · CSV / comma-separated OK`;
   }
 
   function escapeHtml(str) {
@@ -119,8 +122,9 @@
 
   function formatEta(seconds, human) {
     if (human) return human;
-    if (seconds == null) return "—";
+    if (seconds == null || seconds === "") return "—";
     seconds = Math.max(0, Math.round(Number(seconds)));
+    if (Number.isNaN(seconds)) return "—";
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     const h = Math.floor(seconds / 3600);
@@ -132,9 +136,33 @@
     return Number(n || 0).toLocaleString();
   }
 
+  function fingerprint(tasks, stats) {
+    return JSON.stringify({
+      stats,
+      tasks: (tasks || []).map((t) => [
+        t.task_id,
+        t.status,
+        t.progress,
+        t.percent,
+        t.eta_human || t.eta_seconds,
+        t.hit_count ?? (t.successful_logins || []).length,
+        t.result_count,
+        (t.successful_logins || []).map((h) => h.password).join("|"),
+        (t.recent_results || t.results || [])
+          .slice(-6)
+          .map((r) => `${r.success}:${r.message}`)
+          .join("|"),
+      ]),
+    });
+  }
+
   function filteredTasks() {
     if (state.filter === "all") return state.tasks;
-    if (state.filter === "hits") return state.tasks.filter((t) => t.successful_logins?.length);
+    if (state.filter === "hits") {
+      return state.tasks.filter(
+        (t) => (t.successful_logins && t.successful_logins.length) || t.hit_count > 0
+      );
+    }
     if (state.filter === "processing") {
       return state.tasks.filter((t) => t.status === "processing" || t.status === "pending");
     }
@@ -153,19 +181,26 @@
       : "Waiting for runs";
   }
 
-  function renderTasks() {
+  function renderTasks(force = false) {
     const tasks = filteredTasks();
-    els.taskList.innerHTML = tasks.map(renderTask).join("");
+    const fp = fingerprint(tasks, state.stats);
+    if (!force && fp === state.lastFingerprint) return;
+    state.lastFingerprint = fp;
+
+    const html = tasks.map((task) => renderTask(task, !state.knownIds.has(task.task_id))).join("");
+    els.taskList.innerHTML = html;
+    tasks.forEach((t) => state.knownIds.add(t.task_id));
     els.emptyState.hidden = tasks.length > 0;
   }
 
-  function renderTask(task) {
+  function renderTask(task, isNew) {
     const names = (task.usernames && task.usernames.length
       ? task.usernames
       : [task.username]
     ).filter(Boolean);
     const title = names.slice(0, 3).join(", ") + (names.length > 3 ? ` +${names.length - 3}` : "");
     const pct = Math.min(100, Number(task.percent) || 0);
+
     const hits = (task.successful_logins || [])
       .map(
         (h) => `
@@ -176,14 +211,23 @@
       )
       .join("");
 
+    const recent = (task.recent_results || task.results || []).slice(-8).reverse();
+    const recentHtml = recent
+      .map((r) => {
+        const cls = r.success ? "attempt-ok" : "attempt-miss";
+        const pw = r.success ? r.password : "***";
+        return `<div class="attempt ${cls}"><span>${escapeHtml(r.username)}:${escapeHtml(pw)}</span><span>${escapeHtml(r.message || (r.success ? "hit" : "miss"))}</span></div>`;
+      })
+      .join("");
+
     const canCancel = task.status === "processing" || task.status === "pending";
 
     return `
-      <article class="task" data-id="${task.task_id}">
+      <article class="task${isNew ? " is-new" : ""}" data-id="${task.task_id}">
         <div class="task-top">
           <div>
             <div class="task-title">${escapeHtml(title || "Untitled")}</div>
-            <div class="task-id">${escapeHtml(task.task_id.slice(0, 8))} · ${escapeHtml(task.source || "upload")} · ${formatCount(task.password_count)} pw · shard ${escapeHtml(task.shard_label || "1/1")}${task.stream ? " · stream" : ""}</div>
+            <div class="task-id">${escapeHtml(String(task.task_id).slice(0, 8))} · ${escapeHtml(task.source || "upload")} · ${formatCount(task.password_count)} pw · shard ${escapeHtml(task.shard_label || "1/1")}${task.stream ? " · stream" : ""}</div>
           </div>
           <span class="status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
         </div>
@@ -192,10 +236,11 @@
           <span>${formatCount(task.progress)}/${formatCount(task.total)} (${pct}%)</span>
           <span>${task.attempts_per_second || 0}/s</span>
           <span>ETA ${formatEta(task.eta_seconds, task.eta_human)}</span>
-          ${task.total_replicas > 1 ? `<span>cluster ~${formatEta(task.cluster_eta_seconds)}</span>` : ""}
+          <span>${formatCount(task.hit_count ?? (task.successful_logins || []).length)} hits</span>
           ${task.error ? `<span style="color:var(--rose)">${escapeHtml(task.error)}</span>` : ""}
         </div>
-        ${hits ? `<div class="hits">${hits}</div>` : ""}
+        ${hits ? `<div class="hits"><div class="feed-label">Hits</div>${hits}</div>` : ""}
+        ${recentHtml ? `<div class="attempts"><div class="feed-label">Recent attempts</div>${recentHtml}</div>` : ""}
         <div class="task-actions">
           ${canCancel ? `<button type="button" class="btn btn-ghost" data-cancel="${task.task_id}">Cancel</button>` : ""}
           <button type="button" class="btn btn-ghost" data-export="${task.task_id}">Export</button>
@@ -204,23 +249,48 @@
       </article>`;
   }
 
-  async function refresh() {
+  async function refresh(force = false) {
+    if (state.pollInFlight) return;
+    state.pollInFlight = true;
     try {
-      const res = await fetch("/api/tasks");
+      const res = await fetch("/api/tasks", { cache: "no-store" });
       const data = await res.json();
       if (!data.success) return;
-      state.tasks = data.tasks || [];
+      // Merge: never drop a task that still exists locally with higher progress
+      const incoming = data.tasks || [];
+      const byId = new Map(state.tasks.map((t) => [t.task_id, t]));
+      const merged = incoming.map((t) => {
+        const prev = byId.get(t.task_id);
+        if (!prev) return t;
+        const prevHits = (prev.successful_logins || []).length;
+        const nextHits = (t.successful_logins || []).length;
+        if ((prev.progress || 0) > (t.progress || 0) && prevHits >= nextHits) {
+          return prev;
+        }
+        if (nextHits < prevHits) {
+          return { ...t, successful_logins: prev.successful_logins, hit_count: prevHits };
+        }
+        return t;
+      });
+      // Keep local-only active tasks briefly if server blipped empty
+      if (merged.length === 0 && state.tasks.some((t) => t.status === "processing")) {
+        renderStats(state.stats);
+        return;
+      }
+      state.tasks = merged;
       state.stats = data.stats || {};
       renderStats(state.stats);
-      renderTasks();
+      renderTasks(force);
     } catch {
       /* keep UI alive */
+    } finally {
+      state.pollInFlight = false;
     }
   }
 
   async function checkHealth() {
     try {
-      const res = await fetch("/health");
+      const res = await fetch("/health", { cache: "no-store" });
       const data = await res.json();
       if (data.status === "healthy") {
         els.healthPill.textContent = "online";
@@ -275,6 +345,10 @@
         return;
       }
       toast(data.message || "Run started", "success");
+      if (data.task) {
+        state.tasks = [data.task, ...state.tasks.filter((t) => t.task_id !== data.task.task_id)];
+        renderTasks(true);
+      }
       if (source === "upload") {
         els.file.value = "";
         els.fileMeta.hidden = true;
@@ -283,7 +357,7 @@
         els.passwords.value = "";
         previewPaste();
       }
-      await refresh();
+      await refresh(true);
     } catch (err) {
       toast(String(err.message || err), "error");
     } finally {
@@ -296,7 +370,7 @@
     const res = await fetch(`/api/tasks/${id}/cancel`, { method: "POST" });
     const data = await res.json();
     toast(data.success ? "Cancel requested" : data.error || "Cancel failed", data.success ? "info" : "error");
-    refresh();
+    refresh(true);
   }
 
   async function deleteTask(id) {
@@ -304,7 +378,10 @@
     const res = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
     const data = await res.json();
     toast(data.success ? "Deleted" : data.error || "Delete failed", data.success ? "success" : "error");
-    refresh();
+    state.tasks = state.tasks.filter((t) => t.task_id !== id);
+    state.knownIds.delete(id);
+    renderTasks(true);
+    refresh(true);
   }
 
   async function exportTask(id) {
@@ -326,14 +403,14 @@
     els.dialog.showModal();
   }
 
-  // Events
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => setSource(tab.dataset.source)));
 
   $$(".chip[data-filter]").forEach((chip) => {
     chip.addEventListener("click", () => {
       state.filter = chip.dataset.filter;
       $$(".chip[data-filter]").forEach((c) => c.classList.toggle("is-active", c === chip));
-      renderTasks();
+      state.lastFingerprint = "";
+      renderTasks(true);
     });
   });
 
@@ -370,7 +447,7 @@
     const res = await fetch("/api/tasks/clear-finished", { method: "POST" });
     const data = await res.json();
     toast(data.success ? `Cleared ${data.removed}` : "Clear failed", data.success ? "success" : "error");
-    refresh();
+    refresh(true);
   });
 
   els.taskList.addEventListener("click", (e) => {
@@ -393,7 +470,7 @@
 
   setSource("upload");
   checkHealth();
-  refresh();
-  state.pollTimer = setInterval(refresh, cfg.pollMs || 1500);
+  refresh(true);
+  state.pollTimer = setInterval(() => refresh(false), cfg.pollMs || 1000);
   setInterval(checkHealth, 15000);
 })();

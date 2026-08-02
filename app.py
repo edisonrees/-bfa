@@ -230,14 +230,14 @@ def sample_wordlist():
 def get_tasks():
     try:
         status = (request.args.get("status") or "").strip().lower()
-        tasks = task_manager.get_all_tasks()
+        payloads = task_manager.list_payloads()
         if status:
-            tasks = [t for t in tasks if t.status == status]
+            payloads = [t for t in payloads if t.get("status") == status]
         return jsonify(
             {
                 "success": True,
-                "tasks": [t.to_dict() for t in tasks],
-                "count": len(tasks),
+                "tasks": payloads,
+                "count": len(payloads),
                 "stats": task_manager.stats(),
                 "replica": {
                     "id": replica_info.replica_id,
@@ -474,6 +474,7 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
                             }
                         )
                         logger.info("HIT %s (mock)", username)
+                        task_manager.update_task(task)
                         if task.stop_on_first:
                             stop_all = True
                             break
@@ -481,7 +482,8 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
                         task.failed_attempts += 1
 
                     updates += 1
-                    if updates % 5 == 0:
+                    # Persist often so UI polls never see empty/stale flashes
+                    if result.success or updates == 1 or updates % 2 == 0:
                         task_manager.update_task(task)
                 except Exception as exc:
                     logger.error("Check failed %s: %s", username, exc)
@@ -489,6 +491,7 @@ def process_task_background(task_id: str, filepath: Optional[str]) -> None:
                     task.progress += 1
                     task.note_progress()
                     updates += 1
+                    task_manager.update_task(task)
 
             if stop_all or task.cancel_requested:
                 break

@@ -550,7 +550,46 @@ textarea:focus {
   border-radius: 16px;
   background: rgba(0, 0, 0, 0.2);
   padding: 1rem;
+}
+
+.task.is-new {
   animation: rise 0.35s ease both;
+}
+
+.feed-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.attempts {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.attempt {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.attempt-ok {
+  background: var(--teal-dim);
+  border-color: rgba(47, 158, 143, 0.25);
+}
+
+.attempt-miss {
+  color: var(--muted);
 }
 
 .task-top {
